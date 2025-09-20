@@ -1,0 +1,24 @@
+# Основные зависимости для клиента управления
+requests>=2.31.0
+websockets>=12.0
+asyncio-mqtt>=0.13.0
+
+# Для API сервера (если запускается локально)
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+
+# Для работы с данными
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Для мониторинга системы
+psutil>=5.9.0
+
+# Для работы с БД
+asyncpg>=0.29.0
+
+# Утилиты
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+aiofiles>=23.0.0

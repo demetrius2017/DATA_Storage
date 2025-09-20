@@ -1,0 +1,66 @@
+{  "database": {
+    "host": "your-database-host",
+    "port": 25060,
+    "database": "defaultdb",
+    "user": "your-username",
+    "password": "your-password",
+    "ssl_mode": "require",
+    "connection_string": "postgresql://user:password@host:port/database"
+  },ase": {
+    "host": "your-database-host",
+    "port": 25060,
+    "name": "defaultdb",
+    "user": "your-username",
+    "password": "your-password",
+    "ssl_mode": "require",
+    "connection_string": "postgresql://user:password@host:port/database"
+  },
+  "storage": {
+    "type": "postgresql",
+    "batch_size": 100,
+    "buffer_size": 500,
+    "flush_interval": 5
+  },
+  "postgresql": {
+    "pool_size": 20,
+    "max_overflow": 30,
+    "pool_timeout": 30,
+    "pool_recycle": 3600,
+    "pool_pre_ping": true
+  },
+  "collection": {
+    "symbols_chunk_size": 50,
+    "concurrent_collectors": 4,
+    "rate_limit_per_second": 1000,
+    "reconnect_attempts": 5,
+    "reconnect_delay": 30,
+    "heartbeat_interval": 20
+  },
+  "api": {
+    "use_testnet": false,
+    "base_url": "wss://stream.binancefuture.com/ws/"
+  },
+  "monitoring": {
+    "enabled": true,
+    "prometheus_port": 9091,
+    "metrics_interval": 60,
+    "health_check_interval": 30,
+    "web_port": 8080
+  },
+  "logging": {
+    "level": "INFO",
+    "format": "json",
+    "rotation": "midnight",
+    "retention": 7,
+    "max_size": "100MB"
+  },
+  "deployment": {
+    "environment": "production",
+    "region": "digital_ocean_nyc1",
+    "max_symbols": 200,
+    "resource_limits": {
+      "max_memory": "3GB",
+      "max_cpu": "2.0"
+    }
+  }
+}

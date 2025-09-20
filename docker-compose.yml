@@ -1,0 +1,185 @@
+version: '3.8'
+
+services:
+  # Основной коллектор данных
+  collector:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    container_name: orderbook-collector
+    environment:
+      # PostgreSQL подключение
+      - DB_HOST=${DB_HOST}
+      - DB_PORT=${DB_PORT:-25060}
+      - DB_NAME=${DB_NAME:-defaultdb}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_SSLMODE=require
+      
+      # Binance API
+      - BINANCE_API_KEY=${BINANCE_API_KEY}
+      - BINANCE_SECRET_KEY=${BINANCE_SECRET_KEY}
+      
+      # Конфигурация сбора
+      - SYMBOLS_CHUNK_SIZE=50
+      - BATCH_SIZE=100
+      - POOL_SIZE=20
+      - LOG_LEVEL=INFO
+      
+    volumes:
+      - ./logs:/app/logs
+      - ./config:/app/config:ro
+      - ./data:/app/data
+    
+    command: [
+      "collector.main", 
+      "--config", "/app/config/production.json",
+      "--production",
+      "--symbols",
+      "BTCUSDT", "ETHUSDT", "ADAUSDT", "BNBUSDT", "XRPUSDT",
+      "SOLUSDT", "DOTUSDT", "DOGEUSDT", "AVAXUSDT", "MATICUSDT",
+      "UNIUSDT", "LINKUSDT", "AAVEUSDT", "COMPUSDT", "MKRUSDT",
+      "SUSHIUSDT", "CRVUSDT", "YFIUSDT", "1INCHUSDT", "ALPHAUSDT"
+    ]
+    
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:9091/metrics', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
+        
+    networks:
+      - orderbook-network
+
+  # API для доступа к данным
+  api:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    container_name: orderbook-api
+    ports:
+      - "8080:8080"
+    environment:
+      - DB_HOST=${DB_HOST}
+      - DB_PORT=${DB_PORT:-25060}
+      - DB_NAME=${DB_NAME:-defaultdb}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_SSLMODE=require
+      - API_PORT=8080
+      - API_HOST=0.0.0.0
+      
+    volumes:
+      - ./logs:/app/logs
+      
+    command: ["api.main", "--port", "8080", "--host", "0.0.0.0"]
+    
+    depends_on:
+      - collector
+      
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      
+    networks:
+      - orderbook-network
+
+  # Prometheus для метрик
+  prometheus:
+    image: prom/prometheus:v2.40.0
+    restart: unless-stopped
+    container_name: orderbook-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/rules:/etc/prometheus/rules:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    networks:
+      - orderbook-network
+
+  # Grafana для визуализации
+  grafana:
+    image: grafana/grafana:9.3.0
+    restart: unless-stopped
+    container_name: orderbook-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin123}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - orderbook-network
+
+  # Node Exporter для системных метрик
+  node-exporter:
+    image: prom/node-exporter:v1.5.0
+    restart: unless-stopped
+    container_name: orderbook-node-exporter
+    ports:
+      - "9100:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    networks:
+      - orderbook-network
+
+  # Redis для кеширования (опционально)
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    container_name: orderbook-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    networks:
+      - orderbook-network
+
+# Volumes для персистентных данных
+volumes:
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  redis_data:
+    driver: local
+
+# Сеть для контейнеров
+networks:
+  orderbook-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

@@ -1,0 +1,23 @@
+{
+  "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
+  "api": {
+    "use_testnet": false,
+    "comment": "Переключаемся на production для получения реальных тиковых данных"
+  },
+  "websocket": {
+    "reconnect_interval": 3,
+    "ping_interval": 20,
+    "max_reconnects": 100
+  },
+  "storage": {
+    "base_dir": "./data/binance_orderbook",
+    "compression": "gzip",
+    "rotation_hours": 6,
+    "backup_enabled": true
+  },
+  "monitoring": {
+    "web_port": 8080,
+    "metrics_interval": 30,
+    "health_check_interval": 15
+  }
+}
