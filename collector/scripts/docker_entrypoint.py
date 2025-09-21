@@ -72,11 +72,19 @@ class ProductionCollector:
         schema_file = Path('/app/collector/database/schema.sql')
         if schema_file.exists():
             logger.info("📋 Creating database schema...")
-            with open(schema_file, 'r') as f:
-                schema_sql = f.read()
-            
-            await self.db_connection.execute_script(schema_sql)
-            logger.info("✅ Database schema created successfully")
+            try:
+                with open(schema_file, 'r') as f:
+                    schema_sql = f.read()
+                # Понижаем lock_timeout на сессию, чтобы не зависать на конфликтующих объектах
+                try:
+                    await self.db_connection.execute_script("SET lock_timeout TO '5s';")
+                except Exception:
+                    pass
+                await self.db_connection.execute_script(schema_sql)
+                logger.info("✅ Database schema created successfully")
+            except Exception as e:
+                # Не фейлим весь запуск: схемы уже есть, ошибок блокировок достаточно для пропуска
+                logger.warning(f"⚠️ Schema creation skipped due to error: {e}")
 
             # Доп. гарантия: уникальный индекс для поддержки ON CONFLICT на depth_events
             # В проде мог быть развёрнут ранний вариант без PK/unique — создаём idempotent-индекс
