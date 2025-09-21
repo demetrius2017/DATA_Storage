@@ -77,6 +77,20 @@ class ProductionCollector:
             
             await self.db_connection.execute_script(schema_sql)
             logger.info("✅ Database schema created successfully")
+
+            # Доп. гарантия: уникальный индекс для поддержки ON CONFLICT на depth_events
+            # В проде мог быть развёрнут ранний вариант без PK/unique — создаём idempotent-индекс
+            try:
+                ensure_idx_sql = (
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS uq_depth_events_symbol_final
+                    ON marketdata.depth_events (symbol_id, final_update_id);
+                    """
+                )
+                await self.db_connection.execute_script(ensure_idx_sql)
+                logger.info("✅ Ensured unique index on marketdata.depth_events (symbol_id, final_update_id)")
+            except Exception as e:
+                logger.error(f"❌ Failed to ensure unique index for depth_events: {e}")
         else:
             logger.warning("⚠️ Schema file not found, skipping schema creation")
     
