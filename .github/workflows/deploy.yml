@@ -80,6 +80,9 @@ jobs:
             if ! docker compose version >/dev/null 2>&1; then
               apt-get update -y && apt-get install -y docker-compose-plugin
             fi
+            if ! command -v curl >/dev/null 2>&1; then
+              apt-get update -y && apt-get install -y curl
+            fi
 
             # 2) Рабочая директория
             mkdir -p /opt/orderbook-collector
