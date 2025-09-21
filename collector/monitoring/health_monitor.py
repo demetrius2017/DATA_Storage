@@ -455,13 +455,15 @@ class MonitoringDashboard:
                 result = await conn.fetchval('SELECT 1')
                 if result == 1:
                     # Добавляем сводку по эндпоинтам для быстрой проверки окружения
+                    recent = await self._recent_ingestion_summary(conn)
                     return web.json_response({
                         'status': 'healthy', 
                         'database': 'ok',
                         'binance': {
                             'base_url': os.getenv('BINANCE_BASE_URL', 'https://fapi.binance.com'),
                             'ws_url': os.getenv('BINANCE_WS_URL', 'wss://fstream.binance.com/ws/')
-                        }
+                        },
+                        'recent': recent
                     })
         except Exception as e:
             return web.json_response(
@@ -476,6 +478,31 @@ class MonitoringDashboard:
         site = web.TCPSite(runner, '0.0.0.0', self.port)
         await site.start()
         logger.info(f"Monitoring dashboard started on http://0.0.0.0:{self.port}")
+
+    async def _recent_ingestion_summary(self, conn: asyncpg.Connection) -> Dict[str, Any]:
+        """Сводка по свежим данным: счетчики за 1 минуту и последние timestamps."""
+        try:
+            bt1 = await conn.fetchval("SELECT COUNT(*) FROM marketdata.book_ticker WHERE ts_exchange >= NOW() - INTERVAL '1 minute'")
+            tr1 = await conn.fetchval("SELECT COUNT(*) FROM marketdata.trades WHERE ts_exchange >= NOW() - INTERVAL '1 minute'")
+            de1 = await conn.fetchval("SELECT COUNT(*) FROM marketdata.depth_events WHERE ts_exchange >= NOW() - INTERVAL '1 minute'")
+            last_bt = await conn.fetchval("SELECT MAX(ts_exchange) FROM marketdata.book_ticker")
+            last_tr = await conn.fetchval("SELECT MAX(ts_exchange) FROM marketdata.trades")
+            last_de = await conn.fetchval("SELECT MAX(ts_exchange) FROM marketdata.depth_events")
+            to_iso = lambda v: v.isoformat() if v else None
+            return {
+                'last': {
+                    'book_ticker': to_iso(last_bt),
+                    'trades': to_iso(last_tr),
+                    'depth_events': to_iso(last_de)
+                },
+                'counts_1m': {
+                    'book_ticker': int(bt1 or 0),
+                    'trades': int(tr1 or 0),
+                    'depth_events': int(de1 or 0)
+                }
+            }
+        except Exception as e:
+            return {'error': str(e)}
 
 class MonitoringSystem:
     """Главный класс системы мониторинга"""

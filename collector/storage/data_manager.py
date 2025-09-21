@@ -346,7 +346,11 @@ class DataManager:
             'storage_type': self.storage_type,
             'records_written': self.records_written,
             'files_created': getattr(self, 'files_created', 0),
-            'buffer_size': len(self.buffer)
+            'buffer_size': len(self.buffer),
+            # Ожидаемые тестами поля
+            'output_directory': str(self.output_dir),
+            'compression_enabled': bool(self.compress),
+            'rotation_hours': int(getattr(self, 'rotation_hours', 24)),
         }
         
         # Добавление статистики PostgreSQL

@@ -167,8 +167,8 @@ class DatabaseManager:
         async with self.pool.acquire() as conn:
             await conn.executemany("""
                 INSERT INTO marketdata.book_ticker 
-                (ts_exchange, ts_ingest, symbol_id, update_id, best_bid, best_ask, bid_qty, ask_qty)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                (ts_exchange, ts_ingest, symbol_id, update_id, best_bid, best_ask, bid_qty, ask_qty, spread, mid)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 ON CONFLICT (symbol_id, ts_exchange, ts_ingest) DO NOTHING
             """, [
                 (
@@ -179,7 +179,9 @@ class DatabaseManager:
                     r['best_bid'],
                     r['best_ask'],
                     r['bid_qty'],
-                    r['ask_qty']
+                    r['ask_qty'],
+                    float(r['best_ask']) - float(r['best_bid']),
+                    (float(r['best_ask']) + float(r['best_bid'])) / 2.0
                 ) for r in records
             ])
             
@@ -193,7 +195,7 @@ class DatabaseManager:
                 INSERT INTO marketdata.trades
                 (ts_exchange, ts_ingest, symbol_id, agg_trade_id, price, qty, is_buyer_maker)
                 VALUES ($1, $2, $3, $4, $5, $6, $7)
-                ON CONFLICT (symbol_id, agg_trade_id) DO NOTHING
+                ON CONFLICT (symbol_id, ts_exchange, agg_trade_id) DO NOTHING
             """, [
                 (
                     datetime.fromtimestamp(r['ts_exchange'] / 1000, tz=timezone.utc),
@@ -217,7 +219,7 @@ class DatabaseManager:
                 (ts_exchange, ts_ingest, symbol_id, first_update_id, final_update_id, 
                  prev_final_update_id, bids, asks)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                ON CONFLICT (symbol_id, final_update_id) DO NOTHING
+                ON CONFLICT (symbol_id, ts_exchange, final_update_id) DO NOTHING
             """, [
                 (
                     datetime.fromtimestamp(r['ts_exchange'] / 1000, tz=timezone.utc),
