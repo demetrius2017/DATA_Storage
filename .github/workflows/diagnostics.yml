@@ -1,0 +1,67 @@
+name: "🔎 Diagnostics: Collector Health & Logs"
+
+on:
+  workflow_dispatch:
+    inputs:
+      tail:
+        description: 'Tail lines from collector logs'
+        required: false
+        default: '200'
+      depth_symbols:
+        description: 'Show depth symbols (from env)'
+        required: false
+        default: 'true'
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📁 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🔐 Prepare env
+        run: |
+          echo "TAIL_LINES=${{ github.event.inputs.tail || '200' }}" >> $GITHUB_ENV
+
+      - name: "🔌 SSH: Inspect server & collector"
+        uses: appleboy/ssh-action@v1.0.0
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          envs: DATABASE_URL,TAIL_LINES
+          script: |
+            set -e
+            cd /opt/orderbook-collector
+
+            echo '== Docker compose ps =='
+            docker compose ps || true
+
+            echo '== Health (localhost) =='
+            if command -v curl >/dev/null 2>&1; then
+              curl -fsS http://localhost:8000/health || true
+            else
+              echo 'curl not found on server' >&2
+            fi
+
+            echo '== .env (masked) =='
+            # mask sensitive values but show depth flags
+            if [ -f .env ]; then
+              grep -E '^(ENABLE_DEPTH|DEPTH_TOP_SYMBOLS|BINANCE_WS_URL|BINANCE_BASE_URL|LOG_LEVEL|ENVIRONMENT|SHARDS)=' .env || true
+            else
+              echo '.env not found'
+            fi
+
+            echo '== Collector logs (tail) =='
+            docker compose logs --no-color --tail=${TAIL_LINES} collector || true
+
+            echo '== Subscriptions grep (depth/bookTicker/aggTrade) =='
+            docker compose logs --no-color collector | grep -E "подписка|streams|depth@100ms|bookTicker|aggTrade" | tail -n 80 || true
+
+            # DB probe skipped here to keep workflow simple and portable
+
+            echo '== Env inside collector of depth flags =='
+            docker compose exec -T collector /bin/sh -lc 'echo ENABLE_DEPTH=$ENABLE_DEPTH; echo DEPTH_TOP_SYMBOLS=$DEPTH_TOP_SYMBOLS; echo BINANCE_WS_URL=$BINANCE_WS_URL' || true
