@@ -219,7 +219,7 @@ class DatabaseManager:
                 (ts_exchange, ts_ingest, symbol_id, first_update_id, final_update_id, 
                  prev_final_update_id, bids, asks)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                ON CONFLICT (symbol_id, ts_exchange, final_update_id) DO NOTHING
+                ON CONFLICT (symbol_id, final_update_id) DO NOTHING
             """, [
                 (
                     datetime.fromtimestamp(r['ts_exchange'] / 1000, tz=timezone.utc),
@@ -300,6 +300,12 @@ class WebSocketStreamManager:
                         streams.append(f"{symbol.lower()}@{channel}")
                 
                 stream_names = "/".join(streams)
+                # Компактный лог подписок: общее количество и первые несколько примеров
+                if len(streams) > 6:
+                    sample = ", ".join(streams[:3] + ["..."] + streams[-3:])
+                else:
+                    sample = ", ".join(streams)
+                logger.info(f"Шард {shard_id}: подписка на {len(streams)} stream(s): {sample}")
                 # Построение combined stream URL на основе базового ws хоста
                 # Принимаем base вида wss://fstream.binance.com/ws/ или wss://fstream.binance.com
                 parsed = urlparse(self.ws_base_url)
