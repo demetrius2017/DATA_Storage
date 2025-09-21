@@ -71,9 +71,11 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          no-cache: ${{ inputs.no_cache }}
+          # Ensure boolean value for push events (no inputs on push)
+          no-cache: ${{ (github.event_name == 'workflow_dispatch' && inputs.no_cache) || false }}
+          # Pass cache-bust only if provided via workflow_dispatch; empty on push
           build-args: |
-            CACHE_BUST=${{ inputs.cache_bust }}
+            CACHE_BUST=${{ (github.event_name == 'workflow_dispatch' && inputs.cache_bust) || '' }}
 
       - name: 🎯 Deploy to Production Server
         uses: appleboy/ssh-action@v1.0.0
