@@ -64,15 +64,18 @@ jobs:
 
       - name: 🎯 Deploy to Production Server
         uses: appleboy/ssh-action@v1.0.0
+        # Передаем переменные окружения в удаленную сессию по списку envs
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
           BINANCE_SECRET_KEY: ${{ secrets.BINANCE_SECRET_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SERVER_PORT || 22 }}
+          envs: DATABASE_URL,BINANCE_API_KEY,BINANCE_SECRET_KEY,GITHUB_TOKEN
           script: |
             set -e
 
@@ -124,9 +127,29 @@ jobs:
             mkdir -p /opt/orderbook-collector
             cd /opt/orderbook-collector
 
-            # 3) Обновляем .env c секретами
+            # 3) Обновляем .env c секретами (fallback к .env.production при пустом секрете)
+            # Скачиваем .env.production из репозитория (на случай fallback)
+            curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                 -H "Accept: application/vnd.github.v3.raw" \
+                 -o env.production \
+                 -L https://api.github.com/repos/${{ github.repository }}/contents/.env.production || true
+
+            DB_URL_FROM_SECRET="${DATABASE_URL:-}"
+            if [ -z "$DB_URL_FROM_SECRET" ] && [ -f env.production ]; then
+              DB_URL_FROM_FILE=$(grep '^DATABASE_URL=' env.production | cut -d= -f2- | tr -d '\r')
+            else
+              DB_URL_FROM_FILE=""
+            fi
+            DB_URL=${DB_URL_FROM_SECRET:-$DB_URL_FROM_FILE}
+
+            if [ -z "$DB_URL" ]; then
+              echo "ERROR: DATABASE_URL is empty (no secret provided and no fallback)." >&2
+              exit 1
+            fi
+
+            # Пишем .env для docker compose (не логируем значение)
             cat > .env << EOF
-            DATABASE_URL=${DATABASE_URL}
+            DATABASE_URL=${DB_URL}
             BINANCE_API_KEY=${BINANCE_API_KEY}
             BINANCE_SECRET_KEY=${BINANCE_SECRET_KEY}
             LOG_LEVEL=INFO
@@ -142,12 +165,31 @@ jobs:
             # 5) Логин в GHCR (на случай приватного образа)
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin || true
 
-            # 6) Рестарт через docker compose
-            docker compose down || true
-            docker compose pull
-            docker compose up -d
+            # 6) Отчет по использованию диска ДО очистки
+            echo "== Docker disk usage (before) =="
+            docker system df -v || true
 
-            # 7) Проверка состояния
+            # 7) Подтягиваем свежие образы заранее (явно указываем env-file)
+            docker compose --env-file .env pull
+
+            # 8) Останавливаем и удаляем предыдущий стек, включая сирот
+            docker compose down --remove-orphans || true
+
+            # 9) Поднимаем сервисы на свежих образах (с env-file)
+            docker compose --env-file .env up -d
+
+            # 10) Пост-очистка: удаляем остановленные контейнеры, старые/неиспользуемые образы, неиспользуемые сети и тома
+            # Важно: image prune с -a и фильтром по давности, чтобы не трогать свежие теги
+            docker container prune -f || true
+            docker image prune -a -f --filter "until=168h" || true
+            docker network prune -f || true
+            docker volume prune -f || true
+
+            # 11) Отчет по использованию диска ПОСЛЕ очистки
+            echo "== Docker disk usage (after) =="
+            docker system df -v || true
+
+            # 12) Проверка состояния
             # Даем сервисам больше времени на старт, т.к. создается пул соединений и выполняется миграция схемы
             sleep 30
             docker compose ps
@@ -155,6 +197,9 @@ jobs:
               echo "Health check failed. Dumping recent container logs..." >&2
               docker compose logs --no-color --tail=200 collector || true
               docker compose logs --no-color --tail=100 redis || true
+              # Диагностика переменных окружения внутри контейнера (без утечки пароля)
+              echo "--- Collector DB endpoint (masked) ---" >&2
+              docker compose exec -T collector python3 -c "import os; from urllib.parse import urlparse, parse_qs; u=os.getenv('DATABASE_URL'); print('DATABASE_URL set:', bool(u)); p=urlparse(u) if u else None; q=parse_qs(p.query) if u else {}; print('host=', getattr(p,'hostname',None), 'port=', getattr(p,'port',None), 'db=', ((p.path or '/')[1:] if p else None), 'ssl=', q)" || true
               # Показать статус/рестарты
               docker ps -a --no-trunc || true
               exit 1
