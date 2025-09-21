@@ -12,7 +12,7 @@ CREATE EXTENSION IF NOT EXISTS timescaledb;
 -- 2. СПРАВОЧНИК СИМВОЛОВ
 -- =====================
 
-CREATE TABLE marketdata.symbols (
+CREATE TABLE IF NOT EXISTS marketdata.symbols (
     id BIGSERIAL PRIMARY KEY,
     exchange TEXT NOT NULL DEFAULT 'binance-futures',
     symbol TEXT NOT NULL,
@@ -27,8 +27,8 @@ CREATE TABLE marketdata.symbols (
 );
 
 -- Индексы для symbols
-CREATE INDEX idx_symbols_active ON marketdata.symbols (is_active) WHERE is_active = true;
-CREATE INDEX idx_symbols_exchange ON marketdata.symbols (exchange);
+CREATE INDEX IF NOT EXISTS idx_symbols_active ON marketdata.symbols (is_active) WHERE is_active = true;
+CREATE INDEX IF NOT EXISTS idx_symbols_exchange ON marketdata.symbols (exchange);
 
 -- Заполнение базовых символов для старта
 INSERT INTO marketdata.symbols (exchange, symbol, base_asset, quote_asset) VALUES
@@ -42,7 +42,7 @@ ON CONFLICT (exchange, symbol) DO NOTHING;
 -- 3. ОСНОВНАЯ ТАБЛИЦА: BOOK TICKER (TOP-OF-BOOK)
 -- ==============================================
 
-CREATE TABLE marketdata.book_ticker (
+CREATE TABLE IF NOT EXISTS marketdata.book_ticker (
     ts_exchange TIMESTAMPTZ NOT NULL,          -- E/1000 от биржи (UTC)
     ts_ingest TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     symbol_id BIGINT NOT NULL REFERENCES marketdata.symbols(id),
@@ -62,17 +62,18 @@ CREATE TABLE marketdata.book_ticker (
 SELECT create_hypertable('marketdata.book_ticker', 'ts_exchange', 
     chunk_time_interval => INTERVAL '1 hour',
     partitioning_column => 'symbol_id',
-    number_partitions => 4
+    number_partitions => 4,
+    if_not_exists => TRUE
 );
 
 -- Индексы для book_ticker
-CREATE INDEX idx_book_ticker_symbol_ts ON marketdata.book_ticker (symbol_id, ts_exchange);
-CREATE INDEX idx_book_ticker_ingest ON marketdata.book_ticker (ts_ingest);
+CREATE INDEX IF NOT EXISTS idx_book_ticker_symbol_ts ON marketdata.book_ticker (symbol_id, ts_exchange);
+CREATE INDEX IF NOT EXISTS idx_book_ticker_ingest ON marketdata.book_ticker (ts_ingest);
 
 -- 4. ТАБЛИЦА СДЕЛОК (AGG_TRADE)
 -- =============================
 
-CREATE TABLE marketdata.trades (
+CREATE TABLE IF NOT EXISTS marketdata.trades (
     ts_exchange TIMESTAMPTZ NOT NULL,          -- E/1000
     ts_ingest TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     symbol_id BIGINT NOT NULL REFERENCES marketdata.symbols(id),
@@ -88,17 +89,18 @@ CREATE TABLE marketdata.trades (
 SELECT create_hypertable('marketdata.trades', 'ts_exchange',
     chunk_time_interval => INTERVAL '1 hour',
     partitioning_column => 'symbol_id', 
-    number_partitions => 4
+    number_partitions => 4,
+    if_not_exists => TRUE
 );
 
 -- Индексы для trades
-CREATE INDEX idx_trades_symbol_ts ON marketdata.trades (symbol_id, ts_exchange);
-CREATE INDEX idx_trades_price ON marketdata.trades (symbol_id, price, ts_exchange);
+CREATE INDEX IF NOT EXISTS idx_trades_symbol_ts ON marketdata.trades (symbol_id, ts_exchange);
+CREATE INDEX IF NOT EXISTS idx_trades_price ON marketdata.trades (symbol_id, price, ts_exchange);
 
 -- 5. СОБЫТИЯ ГЛУБИНЫ (DEPTH UPDATES) - JSONB ВАРИАНТ
 -- ==================================================
 
-CREATE TABLE marketdata.depth_events (
+CREATE TABLE IF NOT EXISTS marketdata.depth_events (
     ts_exchange TIMESTAMPTZ NOT NULL,          -- E/1000
     ts_ingest TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     symbol_id BIGINT NOT NULL REFERENCES marketdata.symbols(id),
@@ -115,21 +117,22 @@ CREATE TABLE marketdata.depth_events (
 SELECT create_hypertable('marketdata.depth_events', 'ts_exchange',
     chunk_time_interval => INTERVAL '30 minutes',
     partitioning_column => 'symbol_id',
-    number_partitions => 8
+    number_partitions => 8,
+    if_not_exists => TRUE
 );
 
 -- Индексы для depth_events
-CREATE INDEX idx_depth_symbol_ts ON marketdata.depth_events (symbol_id, ts_exchange);
-CREATE INDEX idx_depth_update_id ON marketdata.depth_events (symbol_id, final_update_id);
+CREATE INDEX IF NOT EXISTS idx_depth_symbol_ts ON marketdata.depth_events (symbol_id, ts_exchange);
+CREATE INDEX IF NOT EXISTS idx_depth_update_id ON marketdata.depth_events (symbol_id, final_update_id);
 
 -- GIN индекс для быстрого поиска по JSONB
-CREATE INDEX idx_depth_bids_gin ON marketdata.depth_events USING GIN (bids);
-CREATE INDEX idx_depth_asks_gin ON marketdata.depth_events USING GIN (asks);
+CREATE INDEX IF NOT EXISTS idx_depth_bids_gin ON marketdata.depth_events USING GIN (bids);
+CREATE INDEX IF NOT EXISTS idx_depth_asks_gin ON marketdata.depth_events USING GIN (asks);
 
 -- 6. ПРОИЗВОДНАЯ ТАБЛИЦА: TOP-N ORDERBOOK (ПЛОСКИЙ ФОРМАТ)
 -- ========================================================
 
-CREATE TABLE marketdata.orderbook_top5 (
+CREATE TABLE IF NOT EXISTS marketdata.orderbook_top5 (
     ts_exchange TIMESTAMPTZ NOT NULL,
     symbol_id BIGINT NOT NULL REFERENCES marketdata.symbols(id),
     
@@ -160,17 +163,18 @@ CREATE TABLE marketdata.orderbook_top5 (
 SELECT create_hypertable('marketdata.orderbook_top5', 'ts_exchange',
     chunk_time_interval => INTERVAL '30 minutes',
     partitioning_column => 'symbol_id',
-    number_partitions => 8
+    number_partitions => 8,
+    if_not_exists => TRUE
 );
 
 -- Индексы для orderbook_top5
-CREATE INDEX idx_ob_top5_symbol_ts ON marketdata.orderbook_top5 (symbol_id, ts_exchange);
+CREATE INDEX IF NOT EXISTS idx_ob_top5_symbol_ts ON marketdata.orderbook_top5 (symbol_id, ts_exchange);
 
 -- 7. CONTINUOUS AGGREGATES (МАТЕРИАЛИЗОВАННЫЕ ПРЕДСТАВЛЕНИЯ)
 -- ==========================================================
 
 -- 7.1 Агрегаты book_ticker по 1 секунде
-CREATE MATERIALIZED VIEW marketdata.bt_1s
+CREATE MATERIALIZED VIEW IF NOT EXISTS marketdata.bt_1s
 WITH (timescaledb.continuous) AS
 SELECT 
     time_bucket('1 second', ts_exchange) AS ts_second,
@@ -204,11 +208,12 @@ GROUP BY ts_second, symbol_id;
 SELECT add_continuous_aggregate_policy('marketdata.bt_1s',
     start_offset => INTERVAL '1 hour',
     end_offset => INTERVAL '1 minute',
-    schedule_interval => INTERVAL '1 minute'
+    schedule_interval => INTERVAL '1 minute',
+    if_not_exists => TRUE
 );
 
 -- 7.2 Агрегаты trades по 1 секунде  
-CREATE MATERIALIZED VIEW marketdata.trade_1s
+CREATE MATERIALIZED VIEW IF NOT EXISTS marketdata.trade_1s
 WITH (timescaledb.continuous) AS
 SELECT 
     time_bucket('1 second', ts_exchange) AS ts_second,
@@ -236,29 +241,30 @@ GROUP BY ts_second, symbol_id;
 SELECT add_continuous_aggregate_policy('marketdata.trade_1s',
     start_offset => INTERVAL '1 hour', 
     end_offset => INTERVAL '1 minute',
-    schedule_interval => INTERVAL '1 minute'
+    schedule_interval => INTERVAL '1 minute',
+    if_not_exists => TRUE
 );
 
 -- 8. ПОЛИТИКИ RETENTION И КОМПРЕССИЯ
 -- =================================
 
 -- Компрессия book_ticker старше 7 дней
-SELECT add_compression_policy('marketdata.book_ticker', INTERVAL '7 days');
+SELECT add_compression_policy('marketdata.book_ticker', INTERVAL '7 days', if_not_exists => TRUE);
 
 -- Компрессия trades старше 7 дней
-SELECT add_compression_policy('marketdata.trades', INTERVAL '7 days');
+SELECT add_compression_policy('marketdata.trades', INTERVAL '7 days', if_not_exists => TRUE);
 
 -- Компрессия depth_events старше 3 дней (большой объём)
-SELECT add_compression_policy('marketdata.depth_events', INTERVAL '3 days');
+SELECT add_compression_policy('marketdata.depth_events', INTERVAL '3 days', if_not_exists => TRUE);
 
 -- Retention policy: удаление сырых данных старше 30 дней
-SELECT add_retention_policy('marketdata.book_ticker', INTERVAL '30 days');
-SELECT add_retention_policy('marketdata.trades', INTERVAL '30 days');  
-SELECT add_retention_policy('marketdata.depth_events', INTERVAL '7 days');
+SELECT add_retention_policy('marketdata.book_ticker', INTERVAL '30 days', if_not_exists => TRUE);
+SELECT add_retention_policy('marketdata.trades', INTERVAL '30 days', if_not_exists => TRUE);  
+SELECT add_retention_policy('marketdata.depth_events', INTERVAL '7 days', if_not_exists => TRUE);
 
 -- Агрегаты храним дольше - 90 дней
-SELECT add_retention_policy('marketdata.bt_1s', INTERVAL '90 days');
-SELECT add_retention_policy('marketdata.trade_1s', INTERVAL '90 days');
+SELECT add_retention_policy('marketdata.bt_1s', INTERVAL '90 days', if_not_exists => TRUE);
+SELECT add_retention_policy('marketdata.trade_1s', INTERVAL '90 days', if_not_exists => TRUE);
 
 -- 9. ФУНКЦИИ ДЛЯ "ВЧЕРАШНЕГО" ОБУЧЕНИЯ
 -- ====================================
@@ -308,7 +314,7 @@ $$ LANGUAGE plpgsql;
 -- ===========================
 
 -- Представление для мониторинга ingestion rate
-CREATE VIEW marketdata.ingestion_stats AS
+CREATE OR REPLACE VIEW marketdata.ingestion_stats AS
 SELECT 
     s.symbol,
     COUNT(bt.*) AS book_ticker_count_1h,
@@ -330,7 +336,7 @@ GROUP BY s.id, s.symbol
 ORDER BY book_ticker_count_1h DESC;
 
 -- Представление для data quality check
-CREATE VIEW marketdata.data_quality_check AS
+CREATE OR REPLACE VIEW marketdata.data_quality_check AS
 SELECT 
     s.symbol,
     COUNT(bt.*) AS total_records,
