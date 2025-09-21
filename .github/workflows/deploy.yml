@@ -28,6 +28,8 @@ concurrency:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}/orderbook-collector
+  # Deterministic tag to avoid 'latest' ambiguity; branch-shortSHA
+  IMAGE_TAG: ${{ github.ref_name }}-${{ github.sha }}
 
 jobs:
   build-and-deploy:
@@ -67,7 +69,9 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: |
+            ${{ steps.meta.outputs.tags }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -89,12 +93,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ENABLE_DEPTH: ${{ secrets.ENABLE_DEPTH || 'true' }}
           DEPTH_TOP_SYMBOLS: ${{ secrets.DEPTH_TOP_SYMBOLS || 'BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,AVAXUSDT,MATICUSDT,LINKUSDT,ADAUSDT,DOTUSDT' }}
+          IMAGE_TAG: ${{ env.IMAGE_TAG }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SERVER_PORT || 22 }}
-          envs: DATABASE_URL,BINANCE_API_KEY,BINANCE_SECRET_KEY,BINANCE_BASE_URL,BINANCE_WS_URL,GITHUB_TOKEN,ENABLE_DEPTH,DEPTH_TOP_SYMBOLS
+          envs: DATABASE_URL,BINANCE_API_KEY,BINANCE_SECRET_KEY,BINANCE_BASE_URL,BINANCE_WS_URL,GITHUB_TOKEN,ENABLE_DEPTH,DEPTH_TOP_SYMBOLS,IMAGE_TAG
           script: |
             set -e
 
@@ -177,6 +182,7 @@ jobs:
             ENVIRONMENT=production
             ENABLE_DEPTH=${ENABLE_DEPTH:-true}
             DEPTH_TOP_SYMBOLS=${DEPTH_TOP_SYMBOLS:-BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,AVAXUSDT,MATICUSDT,LINKUSDT,ADAUSDT,DOTUSDT}
+            IMAGE_TAG=${IMAGE_TAG}
             EOF
 
             # 4) Забираем актуальный docker-compose.production.yml
@@ -192,7 +198,8 @@ jobs:
             echo "== Docker disk usage (before) =="
             docker system df -v || true
 
-            # 7) Подтягиваем свежие образы заранее (явно указываем env-file)
+            # 7) Подтягиваем свежие образы заранее (явно указываем env-file и используем детерминированный тег)
+            echo "Pulling image tag: ${IMAGE_TAG}"
             docker compose --env-file .env pull
 
             # 8) Останавливаем и удаляем предыдущий стек, включая сирот
@@ -267,7 +274,7 @@ jobs:
           echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
           echo "| Component | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|-----------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Docker Image | ✅ Built and pushed |" >> $GITHUB_STEP_SUMMARY
+          echo "| Docker Image | ✅ Built and pushed (${IMAGE_TAG}) |" >> $GITHUB_STEP_SUMMARY
           echo "| Server Deployment | ✅ Completed |" >> $GITHUB_STEP_SUMMARY
           echo "| Health Check | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
           echo "| Symbols Count | 🎯 200 MM-focused pairs |" >> $GITHUB_STEP_SUMMARY

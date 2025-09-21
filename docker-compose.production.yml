@@ -3,7 +3,7 @@ version: '3.8'
 services:
   # OrderBook Data Collector (our main application)
   collector:
-    image: ghcr.io/demetrius2017/data_storage/orderbook-collector:latest
+    image: ghcr.io/demetrius2017/data_storage/orderbook-collector:${IMAGE_TAG:-latest}
     container_name: orderbook_collector
     environment:
       # External Digital Ocean Database connection
