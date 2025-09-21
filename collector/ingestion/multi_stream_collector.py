@@ -178,7 +178,7 @@ class BatchProcessor:
                             ts_exchange, ts_ingest, symbol_id, agg_trade_id,
                             price, qty, is_buyer_maker
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-                        ON CONFLICT (symbol_id, agg_trade_id) DO NOTHING
+                        ON CONFLICT DO NOTHING
                     """, buffer)
                     
                 elif table_name == 'depth_events':
@@ -188,7 +188,7 @@ class BatchProcessor:
                             first_update_id, final_update_id, prev_final_update_id,
                             bids, asks
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                        ON CONFLICT (symbol_id, final_update_id) DO NOTHING
+                        ON CONFLICT DO NOTHING
                     """, buffer)
             
             logger.debug(f"✅ Flush {table_name}: {len(buffer)} записей")

@@ -117,7 +117,8 @@ CREATE TABLE marketdata.depth_events (
     bids_count int GENERATED ALWAYS AS (jsonb_array_length(bids)) STORED,
     asks_count int GENERATED ALWAYS AS (jsonb_array_length(asks)) STORED,
     
-    PRIMARY KEY (symbol_id, final_update_id)
+    -- Важно: для Timescale уникальные ключи на гипертаблицах должны включать колонку партиционирования (ts_exchange)
+    PRIMARY KEY (symbol_id, ts_exchange, final_update_id)
 );
 
 COMMENT ON TABLE marketdata.depth_events IS 'Raw события изменения глубины рынка';
@@ -127,6 +128,8 @@ COMMENT ON COLUMN marketdata.depth_events.asks IS 'Массив изменени
 -- Индексы для depth_events
 CREATE INDEX idx_depth_events_time ON marketdata.depth_events (symbol_id, ts_exchange);
 CREATE INDEX idx_depth_events_update_id ON marketdata.depth_events (symbol_id, final_update_id);
+-- Дублирующий уникальный индекс для ускорения ON CONFLICT, если PK уже определяет уникальность
+-- CREATE UNIQUE INDEX IF NOT EXISTS uq_depth_events_symbol_time_final ON marketdata.depth_events (symbol_id, ts_exchange, final_update_id);
 
 -- ===============================================
 -- 5. ORDERBOOK TOP-N (PROCESSED FEATURES)

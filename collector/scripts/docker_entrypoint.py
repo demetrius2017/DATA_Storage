@@ -91,12 +91,12 @@ class ProductionCollector:
             try:
                 ensure_idx_sql = (
                     """
-                    CREATE UNIQUE INDEX IF NOT EXISTS uq_depth_events_symbol_final
-                    ON marketdata.depth_events (symbol_id, final_update_id);
+                    CREATE UNIQUE INDEX IF NOT EXISTS uq_depth_events_symbol_time_final
+                    ON marketdata.depth_events (symbol_id, ts_exchange, final_update_id);
                     """
                 )
                 await self.db_connection.execute_script(ensure_idx_sql)
-                logger.info("✅ Ensured unique index on marketdata.depth_events (symbol_id, final_update_id)")
+                logger.info("✅ Ensured unique index on marketdata.depth_events (symbol_id, ts_exchange, final_update_id)")
             except Exception as e:
                 logger.error(f"❌ Failed to ensure unique index for depth_events: {e}")
         else:

@@ -1,0 +1,74 @@
+name: "✅ Verify: Ingestion Freshness & Volume"
+
+on:
+  workflow_dispatch:
+    inputs:
+      depth_required:
+        description: 'Require depth_events freshness and rate'
+        required: false
+        default: 'true'
+      freshness_seconds:
+        description: 'Max allowed freshness lag in seconds'
+        required: false
+        default: '60'
+      min_bt_1m:
+        description: 'Min book_ticker rows in last minute'
+        required: false
+        default: '10'
+      min_tr_1m:
+        description: 'Min trades rows in last minute'
+        required: false
+        default: '10'
+      min_de_1m:
+        description: 'Min depth_events rows in last minute'
+        required: false
+        default: '10'
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📦 Checkout
+        uses: actions/checkout@v4
+
+      - name:  SSH to server and run verification
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          timeout: 30s
+          command_timeout: 10m
+          script: |
+            set -e
+            cd /opt/orderbook-collector
+            # Extract DATABASE_URL from .env
+            if [ -f .env ]; then
+              DB_URL=$(grep '^DATABASE_URL=' .env | sed 's/^DATABASE_URL=//')
+            else
+              echo '.env not found' >&2
+              exit 2
+            fi
+            echo '== Running verify_ingestion on server =='
+            FRESHNESS="${{ github.event.inputs.freshness_seconds || '60' }}"
+            MIN_BT="${{ github.event.inputs.min_bt_1m || '10' }}"
+            MIN_TR="${{ github.event.inputs.min_tr_1m || '10' }}"
+            MIN_DE="${{ github.event.inputs.min_de_1m || '10' }}"
+            DEPTH_REQ="${{ github.event.inputs.depth_required || 'true' }}"
+
+            ARGS="--freshness-seconds ${FRESHNESS} --min-bt-per-minute ${MIN_BT} --min-tr-per-minute ${MIN_TR} --min-de-per-minute ${MIN_DE}"
+            if [ "${DEPTH_REQ}" = "true" ]; then
+              ARGS="${ARGS} --depth-required"
+            fi
+
+            set +e
+            OUTPUT=$(docker compose exec -T -e DATABASE_URL="$DB_URL" collector python3 -m collector.tools.verify_ingestion ${ARGS} 2>&1)
+            CODE=$?
+            set -e
+            echo "${OUTPUT}"
+            if [ ${CODE} -ne 0 ]; then
+              echo "Verification failed with code ${CODE}" >&2
+              exit ${CODE}
+            fi
+            echo "Verification passed"

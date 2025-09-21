@@ -74,6 +74,9 @@ async def main():
         # Переопределение режима API если указан флаг
         if args.production:
             config['api']['use_testnet'] = False
+            # Обновляем api_credentials после смены режима, иначе останется testnet ws_url
+            from collector.config.settings import get_api_credentials
+            config['api_credentials'] = get_api_credentials(use_testnet=False)
             logger.info("⚠️  PRODUCTION MODE ENABLED - Using real Binance API")
         
         # Создание компонентов для каждого символа

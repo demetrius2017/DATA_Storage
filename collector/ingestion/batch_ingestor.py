@@ -128,12 +128,64 @@ class DatabaseManager:
         async with self.pool.acquire() as conn:
             rows = await conn.fetch("SELECT id, symbol FROM marketdata.symbols WHERE is_active = true")
             self.symbol_cache = {row['symbol']: row['id'] for row in rows}
+
+
+class NullDatabaseManager(DatabaseManager):
+    """Null-обработчик БД для локального dry-run: эмулирует интерфейс без подключений."""
+    def __init__(self):
+        # not calling super().__init__ on purpose, avoid pool setup
+        self.pool = None
+        self.symbol_cache: Dict[str, int] = {}
+        self._id_seq = 1
+
+    async def initialize(self):
+        logger.info("DRY-RUN: БД не используется, записи не будут сохраняться")
+        self.symbol_cache = {}
+
+    async def _load_symbol_cache(self):
+        # no-op for dry run
+        return
+
+    async def get_or_create_symbol_id(self, symbol: str) -> int:
+        sid = self.symbol_cache.get(symbol)
+        if sid is None:
+            sid = self._id_seq
+            self._id_seq += 1
+            self.symbol_cache[symbol] = sid
+        return sid
+
+    async def batch_insert_book_ticker(self, records: List[Dict[str, Any]]):
+        if not records:
+            return
+        logger.info(f"DRY-RUN: book_ticker x{len(records)} (не сохраняем)")
+
+    async def batch_insert_trades(self, records: List[Dict[str, Any]]):
+        if not records:
+            return
+        logger.info(f"DRY-RUN: trades x{len(records)} (не сохраняем)")
+
+    async def batch_insert_depth_events(self, records: List[Dict[str, Any]]):
+        if not records:
+            return
+        logger.info(f"DRY-RUN: depth_events x{len(records)} (не сохраняем)")
+
+    async def close(self):
+        logger.info("DRY-RUN: закрывать нечего")
     
     async def get_or_create_symbol_id(self, symbol: str) -> int:
         """Получение или создание ID символа"""
         if symbol in self.symbol_cache:
             return self.symbol_cache[symbol]
-            
+
+        # Защита от неинициализированного пула в локальном DRY-RUN
+        if self.pool is None:
+            if os.getenv('DRY_RUN', 'false').lower() in ('1', 'true', 'yes'):
+                # Эфемерная выдача ID без БД
+                new_id = max(self.symbol_cache.values(), default=0) + 1
+                self.symbol_cache[symbol] = new_id
+                return new_id
+            raise RuntimeError("Database connection pool is not initialized (pool=None). Set DRY_RUN=true for local run or provide a valid DATABASE_URL.")
+
         async with self.pool.acquire() as conn:
             # Попытка вставки нового символа
             try:
@@ -163,13 +215,18 @@ class DatabaseManager:
         """Батчевая вставка book_ticker записей"""
         if not records:
             return
-            
+        if self.pool is None:
+            if os.getenv('DRY_RUN', 'false').lower() in ('1', 'true', 'yes'):
+                logger.info(f"DRY-RUN: book_ticker x{len(records)} (не сохраняем)")
+                return
+            raise RuntimeError("Database connection pool is not initialized (pool=None)")
+
         async with self.pool.acquire() as conn:
             await conn.executemany("""
                 INSERT INTO marketdata.book_ticker 
                 (ts_exchange, ts_ingest, symbol_id, update_id, best_bid, best_ask, bid_qty, ask_qty, spread, mid)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                ON CONFLICT (symbol_id, ts_exchange, ts_ingest) DO NOTHING
+                ON CONFLICT DO NOTHING
             """, [
                 (
                     datetime.fromtimestamp(r['ts_exchange'] / 1000, tz=timezone.utc),
@@ -189,13 +246,18 @@ class DatabaseManager:
         """Батчевая вставка trades записей"""
         if not records:
             return
-            
+        if self.pool is None:
+            if os.getenv('DRY_RUN', 'false').lower() in ('1', 'true', 'yes'):
+                logger.info(f"DRY-RUN: trades x{len(records)} (не сохраняем)")
+                return
+            raise RuntimeError("Database connection pool is not initialized (pool=None)")
+
         async with self.pool.acquire() as conn:
             await conn.executemany("""
                 INSERT INTO marketdata.trades
                 (ts_exchange, ts_ingest, symbol_id, agg_trade_id, price, qty, is_buyer_maker)
                 VALUES ($1, $2, $3, $4, $5, $6, $7)
-                ON CONFLICT (symbol_id, ts_exchange, agg_trade_id) DO NOTHING
+                ON CONFLICT DO NOTHING
             """, [
                 (
                     datetime.fromtimestamp(r['ts_exchange'] / 1000, tz=timezone.utc),
@@ -212,14 +274,19 @@ class DatabaseManager:
         """Батчевая вставка depth_events записей"""
         if not records:
             return
-            
+        if self.pool is None:
+            if os.getenv('DRY_RUN', 'false').lower() in ('1', 'true', 'yes'):
+                logger.info(f"DRY-RUN: depth_events x{len(records)} (не сохраняем)")
+                return
+            raise RuntimeError("Database connection pool is not initialized (pool=None)")
+
         async with self.pool.acquire() as conn:
             await conn.executemany("""
                 INSERT INTO marketdata.depth_events
                 (ts_exchange, ts_ingest, symbol_id, first_update_id, final_update_id, 
                  prev_final_update_id, bids, asks)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                ON CONFLICT (symbol_id, final_update_id) DO NOTHING
+                ON CONFLICT DO NOTHING
             """, [
                 (
                     datetime.fromtimestamp(r['ts_exchange'] / 1000, tz=timezone.utc),
@@ -601,18 +668,29 @@ async def main():
     # Конфигурация
     DB_CONNECTION = os.getenv('DATABASE_URL', 
         'postgresql://postgres:password@localhost:5432/marketdata')
+    DRY_RUN = os.getenv('DRY_RUN', 'false').lower() in ('1', 'true', 'yes')
     
     # 200 основных торговых пар
-    SYMBOLS = [
-        'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'SOLUSDT', 'XRPUSDT', 'DOTUSDT',
-        'DOGEUSDT', 'AVAXUSDT', 'MATICUSDT', 'SHIBUSDT', 'LTCUSDT', 'TRXUSDT', 'UNIUSDT',
-        'LINKUSDT', 'BCHUSDT', 'XLMUSDT', 'ATOMUSDT', 'ETCUSDT', 'FILUSDT', 'VETUSDT',
-        'ICPUSDT', 'FTMUSDT', 'HBARUSDT', 'ALGOUSDT', 'THETAUSDT', 'XMRUSDT', 'EOSUSDT',
-        'AAVEUSDT', 'MKRUSDT', 'KLAYUSDT', 'AXSUSDT', 'SANDUSDT', 'MANAUSDT', 'IOTAUSDT',
-        # ... еще 165 символов
-    ]
+    # Переопределение списка символов через ENV SYMBOLS (через запятую)
+    env_symbols = os.getenv('SYMBOLS')
+    if env_symbols:
+        SYMBOLS = [s.strip().upper() for s in env_symbols.split(',') if s.strip()]
+    else:
+        SYMBOLS = [
+            'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'SOLUSDT', 'XRPUSDT', 'DOTUSDT',
+            'DOGEUSDT', 'AVAXUSDT', 'MATICUSDT', 'SHIBUSDT', 'LTCUSDT', 'TRXUSDT', 'UNIUSDT',
+            'LINKUSDT', 'BCHUSDT', 'XLMUSDT', 'ATOMUSDT', 'ETCUSDT', 'FILUSDT', 'VETUSDT',
+            'ICPUSDT', 'FTMUSDT', 'HBARUSDT', 'ALGOUSDT', 'THETAUSDT', 'XMRUSDT', 'EOSUSDT',
+            'AAVEUSDT', 'MKRUSDT', 'KLAYUSDT', 'AXSUSDT', 'SANDUSDT', 'MANAUSDT', 'IOTAUSDT',
+            # ... еще 165 символов
+        ]
     
-    CHANNELS = ['bookTicker', 'aggTrade']  # Начинаем с легких каналов
+    # Переопределение каналов через ENV CHANNELS (через запятую)
+    env_channels = os.getenv('CHANNELS')
+    if env_channels:
+        CHANNELS = [c.strip() for c in env_channels.split(',') if c.strip()]
+    else:
+        CHANNELS = ['bookTicker', 'aggTrade']  # Начинаем с легких каналов
     SHARDS_COUNT = 5
     
     # Создание директории для логов
@@ -625,6 +703,11 @@ async def main():
         channels=CHANNELS,
         shards_count=SHARDS_COUNT
     )
+
+    # Если DRY_RUN активен — подменим менеджер БД на NullDatabaseManager
+    if DRY_RUN:
+        ingestor.db_manager = NullDatabaseManager()
+        logger.info("DRY-RUN активирован: PostgreSQL запись отключена")
     
     # Настройка graceful shutdown
     def signal_handler():
@@ -636,10 +719,16 @@ async def main():
     
     try:
         await ingestor.start()
-        
-        # Ожидание завершения
-        while True:
-            await asyncio.sleep(1)
+
+        # Поддержка ограниченного по времени прогона через ENV DURATION_SECONDS
+        duration = int(os.getenv('DURATION_SECONDS', '0'))
+        if duration > 0:
+            logger.info(f"Ограниченный прогон: {duration} сек")
+            await asyncio.sleep(duration)
+        else:
+            # Ожидание завершения
+            while True:
+                await asyncio.sleep(1)
             
     except KeyboardInterrupt:
         logger.info("Завершение по Ctrl+C")

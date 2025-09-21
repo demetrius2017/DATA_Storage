@@ -134,8 +134,12 @@ class DataManager:
         """
         try:
             if self.storage_type == 'postgresql' and self.postgres_manager:
+                if self.logger.isEnabledFor(logging.DEBUG):
+                    self.logger.debug(f"DataManager: save_record to PostgreSQL: {record.get('symbol')} ts={record.get('timestamp')}")
                 await self._save_to_postgresql(record)
             else:
+                if self.logger.isEnabledFor(logging.DEBUG):
+                    self.logger.debug(f"DataManager: save_record to CSV: {record.get('symbol')} ts={record.get('timestamp')}")
                 await self._save_to_csv(record)
                 
         except Exception as e:
@@ -151,6 +155,10 @@ class DataManager:
             if self.storage_type == 'postgresql' and self.postgres_manager:
                 symbol = raw.get('s', 'UNKNOWN')
                 ob_data = create_orderbook_data(symbol, raw)
+                if self.logger.isEnabledFor(logging.DEBUG):
+                    self.logger.debug(
+                        f"DataManager: save_orderbook_raw PG {symbol} E={raw.get('E')} U={raw.get('U')} u={raw.get('u')}"
+                    )
                 ok = await self.postgres_manager.store_orderbook(ob_data)
                 if ok:
                     self.records_written += 1
@@ -168,6 +176,8 @@ class DataManager:
                 'bid_price': float(raw['b'][0][0]) if raw.get('b') else None,
                 'bid_amount': float(raw['b'][0][1]) if raw.get('b') else None,
             }
+            if self.logger.isEnabledFor(logging.DEBUG):
+                self.logger.debug(f"DataManager: fallback CSV for {simplified.get('symbol')} ts={simplified.get('timestamp')}")
             await self._save_to_csv(simplified)
         except Exception as e:
             self.logger.error(f"Error in save_orderbook_raw: {e}")
@@ -279,6 +289,8 @@ class DataManager:
             
             self.files_created += 1
             self.logger.info(f"📝 Создан новый файл: {filename}")
+            if self.logger.isEnabledFor(logging.DEBUG):
+                self.logger.debug(f"CSV headers: {self.csv_headers}")
             
         except Exception as e:
             self.logger.error(f"Error creating new file: {e}")

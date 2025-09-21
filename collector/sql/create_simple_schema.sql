@@ -124,8 +124,9 @@ ADD CONSTRAINT pk_book_ticker PRIMARY KEY (symbol_id, ts_exchange, COALESCE(upda
 ALTER TABLE marketdata.trades 
 ADD CONSTRAINT pk_trades PRIMARY KEY (symbol_id, agg_trade_id);
 
+-- Для совместимости с Timescale: уникальные ключи на гипертаблицах должны включать колонку партиционирования
 ALTER TABLE marketdata.depth_events 
-ADD CONSTRAINT pk_depth_events PRIMARY KEY (symbol_id, final_update_id);
+ADD CONSTRAINT pk_depth_events PRIMARY KEY (symbol_id, ts_exchange, final_update_id);
 
 -- ===============================================
 -- НАЧАЛЬНЫЕ ДАННЫЕ

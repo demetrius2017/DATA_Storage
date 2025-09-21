@@ -110,7 +110,8 @@ CREATE TABLE IF NOT EXISTS marketdata.depth_events (
     bids JSONB NOT NULL,                       -- массив [["price","qty"], ...]
     asks JSONB NOT NULL,                       -- массив [["price","qty"], ...]
     
-    PRIMARY KEY (symbol_id, final_update_id)
+    -- Для уникальности на hypertable ключ должен включать колонку партиционирования (ts_exchange)
+    PRIMARY KEY (symbol_id, ts_exchange, final_update_id)
 );
 
 -- Создание hypertable для depth_events

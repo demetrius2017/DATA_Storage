@@ -45,6 +45,8 @@ class OrderBookProcessor:
             # Валидация данных
             if not self._validate_data(data):
                 self.error_count += 1
+                if self.logger.isEnabledFor(logging.DEBUG):
+                    self.logger.debug(f"Validation failed for event: keys={list(data.keys())}")
                 return
                 
             # Извлечение лучших bid/ask
@@ -62,10 +64,16 @@ class OrderBookProcessor:
                 
             # Если доступна прямая запись сырых данных в PostgreSQL — используем её
             if getattr(self.data_manager, 'storage_type', 'csv') == 'postgresql' and hasattr(self.data_manager, 'save_orderbook_raw'):
+                if self.logger.isEnabledFor(logging.DEBUG):
+                    self.logger.debug(f"Saving raw depth to PostgreSQL for {data.get('s')}")
                 await self.data_manager.save_orderbook_raw(data)
             else:
                 # Формирование упрощенной записи для CSV
                 record = self._create_record(data, best_bid, best_ask)
+                if self.logger.isEnabledFor(logging.DEBUG):
+                    self.logger.debug(
+                        f"Saving simplified CSV record for {data.get('s')}: bid={best_bid} ask={best_ask}"
+                    )
                 await self.data_manager.save_record(record)
             
             self.processed_count += 1

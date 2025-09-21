@@ -48,6 +48,7 @@ class BinanceCollector:
         self.message_count = 0
         self.start_time = None
         self.is_running = False
+        self._first_messages_logged = 0  # для детальной отладки первых событий
         
         # Проверка API ключа
         if not self.api_key:
@@ -90,6 +91,10 @@ class BinanceCollector:
         url = f"{self.ws_url}{stream_name}"
         
         self.logger.info(f"Connecting to {url}")
+        if self.logger.isEnabledFor(logging.DEBUG):
+            self.logger.debug(
+                f"WS params: ping_interval={self.ping_interval}, max_reconnects={self.max_reconnects}, symbol={self.symbol}"
+            )
         
         async with websockets.connect(
             url,
@@ -128,6 +133,18 @@ class BinanceCollector:
             # Добавление метки времени получения
             data['local_timestamp'] = datetime.now().timestamp() * 1000000  # микросекунды
             
+            # Детальная отладка первых сообщений и периодическая выборка
+            if self._first_messages_logged < 5 or (self.message_count % 200 == 0):
+                try:
+                    bids = data.get('b') or []
+                    asks = data.get('a') or []
+                    self.logger.debug(
+                        f"depthUpdate {self.symbol} E={data.get('E')} U={data.get('U')} u={data.get('u')} b#={len(bids)} a#={len(asks)}"
+                    )
+                except Exception:
+                    pass
+                self._first_messages_logged += 1
+
             # Передача данных процессору
             await self.processor.process_orderbook_update(data)
             
