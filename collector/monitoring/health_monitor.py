@@ -6,6 +6,8 @@ Real-time Monitoring System for OrderBook Data Collection
 import asyncio
 import os
 import asyncpg
+import ssl
+from urllib.parse import urlparse
 import json
 import time
 from datetime import datetime, timezone, timedelta
@@ -519,11 +521,48 @@ class MonitoringSystem:
         logger.info("Запуск системы мониторинга...")
         
         # Подключение к БД
+        # Map sslmode from DSN to asyncpg ssl context
+        ssl_ctx = None
+        try:
+            parsed = urlparse(self.db_connection_string)
+            query = {}
+            if parsed.query:
+                for part in parsed.query.split('&'):
+                    if not part:
+                        continue
+                    k, _, v = part.partition('=')
+                    query[k] = v
+            sslmode = (query.get('sslmode') or os.getenv('DB_SSLMODE') or 'require').lower()
+            if sslmode in ('disable', 'allow', 'prefer'):
+                ssl_ctx = False
+            elif sslmode in ('require', 'verify-none'):
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                ssl_ctx = ctx
+            elif sslmode in ('verify-full', 'verify-ca'):
+                cafile = os.getenv('DB_SSLROOTCERT')
+                if cafile and os.path.exists(cafile):
+                    ctx = ssl.create_default_context(cafile=cafile)
+                else:
+                    ctx = ssl.create_default_context()
+                ctx.check_hostname = True
+                ctx.verify_mode = ssl.CERT_REQUIRED
+                ssl_ctx = ctx
+            else:
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                ssl_ctx = ctx
+        except Exception:
+            ssl_ctx = None
+
         self.db_pool = await asyncpg.create_pool(
             self.db_connection_string,
             min_size=2,
             max_size=5,
-            command_timeout=30
+            command_timeout=30,
+            ssl=ssl_ctx
         )
         
         # Запуск dashboard

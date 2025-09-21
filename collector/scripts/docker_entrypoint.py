@@ -280,9 +280,36 @@ async def main():
     for attempt in range(30):
         try:
             # Простая проверка доступности БД
-            import asyncpg
+            import asyncpg, ssl
+            from urllib.parse import urlparse
             database_url = os.getenv('DATABASE_URL')
-            conn = await asyncpg.connect(database_url)
+            # Honor sslmode=require for DO Postgres
+            ssl_ctx = None
+            try:
+                parsed = urlparse(database_url or '')
+                query = {}
+                if parsed and parsed.query:
+                    for part in parsed.query.split('&'):
+                        if not part:
+                            continue
+                        k, _, v = part.partition('=')
+                        query[k] = v
+                sslmode = (query.get('sslmode') or 'require').lower()
+                if sslmode in ('disable', 'allow', 'prefer'):
+                    ssl_ctx = False
+                elif sslmode in ('require', 'verify-none'):
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+                    ssl_ctx = ctx
+                elif sslmode in ('verify-full', 'verify-ca'):
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = True
+                    ctx.verify_mode = ssl.CERT_REQUIRED
+                    ssl_ctx = ctx
+            except Exception:
+                ssl_ctx = None
+            conn = await asyncpg.connect(database_url, ssl=ssl_ctx)
             await conn.close()
             logger.info("✅ PostgreSQL is ready!")
             break
