@@ -1,0 +1,101 @@
+name: "🔧 DB: Depth Unique Index"
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Apply index creation if safe (no duplicates)"
+        required: false
+        default: "false"
+      schema:
+        description: "DB schema name"
+        required: false
+        default: "marketdata"
+      table:
+        description: "Depth table name"
+        required: false
+        default: "depth_events"
+      index_name:
+        description: "Index name to ensure"
+        required: false
+        default: "uq_depth_events_symbol_time_final"
+
+jobs:
+  ensure-index:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install psql client
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y postgresql-client
+
+      - name: Show existing indexes
+        id: show_indexes
+        env:
+          SCHEMA: ${{ github.event.inputs.schema }}
+          TABLE: ${{ github.event.inputs.table }}
+        run: |
+          echo "Listing indexes for ${SCHEMA}.${TABLE}"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname='${SCHEMA}' AND tablename='${TABLE}' ORDER BY indexname;" | sed -n '1,200p'
+
+      - name: Detect duplicates for (symbol_id, ts_exchange, final_update_id)
+        id: dup_check
+        env:
+          SCHEMA: ${{ github.event.inputs.schema }}
+          TABLE: ${{ github.event.inputs.table }}
+        run: |
+          SQL_DUP="WITH d AS (
+            SELECT symbol_id, ts_exchange, final_update_id, COUNT(*) AS cnt
+            FROM ${SCHEMA}.${TABLE}
+            GROUP BY 1,2,3
+            HAVING COUNT(*) > 1
+          ) SELECT COALESCE(COUNT(*),0) AS dup_groups, COALESCE(SUM(cnt-1),0) AS extra_rows FROM d;"
+          echo "$SQL_DUP" > /tmp/dup.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/dup.sql -t -A -F, > /tmp/dup.csv
+          echo "dup_csv=$(cat /tmp/dup.csv)" >> $GITHUB_OUTPUT
+          echo "Duplicate summary: $(cat /tmp/dup.csv)"
+
+      - name: Ensure unique index (optional)
+        if: ${{ github.event.inputs.apply == 'true' }}
+        env:
+          SCHEMA: ${{ github.event.inputs.schema }}
+          TABLE: ${{ github.event.inputs.table }}
+          INDEX_NAME: ${{ github.event.inputs.index_name }}
+        run: |
+          # Parse duplicates info
+          IFS=',' read -r DUP_GROUPS EXTRA_ROWS < <(echo "${{ steps.dup_check.outputs.dup_csv }}")
+          echo "DUP_GROUPS=$DUP_GROUPS EXTRA_ROWS=$EXTRA_ROWS"
+          if [ -z "$DUP_GROUPS" ] || [ -z "$EXTRA_ROWS" ]; then
+            echo "Could not parse duplicates output" >&2
+            exit 1
+          fi
+          if [ "$EXTRA_ROWS" != "0" ]; then
+            echo "Refusing to create UNIQUE index: there are duplicate rows for (symbol_id, ts_exchange, final_update_id)." >&2
+            exit 2
+          fi
+          SQL_IDX="CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS ${INDEX_NAME}
+          ON ${SCHEMA}.${TABLE} (symbol_id, ts_exchange, final_update_id);"
+          echo "$SQL_IDX" > /tmp/create_index.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/create_index.sql
+
+      - name: Verify index presence
+        env:
+          SCHEMA: ${{ github.event.inputs.schema }}
+          TABLE: ${{ github.event.inputs.table }}
+          INDEX_NAME: ${{ github.event.inputs.index_name }}
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -t -A -F, -c "SELECT indexname FROM pg_indexes WHERE schemaname='${SCHEMA}' AND tablename='${TABLE}' AND indexname='${INDEX_NAME}';" > /tmp/idx.txt
+          echo "Index lookup: $(cat /tmp/idx.txt)"
+          if ! grep -q "${INDEX_NAME}" /tmp/idx.txt ; then
+            echo "Index ${INDEX_NAME} not found or not created." >&2
+            exit 3
+          fi
+
+      - name: Summary
+        run: |
+          echo "Done. If this run had apply=true and duplicates=0, the unique index should now exist."
