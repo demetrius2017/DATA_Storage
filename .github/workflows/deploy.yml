@@ -69,13 +69,15 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
           BINANCE_SECRET_KEY: ${{ secrets.BINANCE_SECRET_KEY }}
+          BINANCE_BASE_URL: ${{ secrets.BINANCE_BASE_URL }}
+          BINANCE_WS_URL: ${{ secrets.BINANCE_WS_URL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SERVER_PORT || 22 }}
-          envs: DATABASE_URL,BINANCE_API_KEY,BINANCE_SECRET_KEY,GITHUB_TOKEN
+          envs: DATABASE_URL,BINANCE_API_KEY,BINANCE_SECRET_KEY,BINANCE_BASE_URL,BINANCE_WS_URL,GITHUB_TOKEN
           script: |
             set -e
 
@@ -152,6 +154,8 @@ jobs:
             DATABASE_URL=${DB_URL}
             BINANCE_API_KEY=${BINANCE_API_KEY}
             BINANCE_SECRET_KEY=${BINANCE_SECRET_KEY}
+            BINANCE_BASE_URL=${BINANCE_BASE_URL:-https://fapi.binance.com}
+            BINANCE_WS_URL=${BINANCE_WS_URL:-wss://fstream.binance.com/ws/}
             LOG_LEVEL=INFO
             ENVIRONMENT=production
             EOF

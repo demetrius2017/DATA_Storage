@@ -11,6 +11,7 @@ import logging
 import signal
 import time
 from pathlib import Path
+import aiohttp
 
 # Добавляем корневую папку в PYTHONPATH
 sys.path.insert(0, '/app')
@@ -39,6 +40,7 @@ class ProductionCollector:
         self.monitoring_system = None
         self.db_connection = None
         self.shutdown_event = asyncio.Event()
+        self.active_symbols = []
         
         # Environment variables
         self.database_url = os.getenv('DATABASE_URL')
@@ -46,6 +48,8 @@ class ProductionCollector:
         self.flush_interval = int(os.getenv('FLUSH_INTERVAL', '30'))
         self.shards = int(os.getenv('SHARDS', '5'))
         self.monitoring_port = int(os.getenv('MONITORING_PORT', '8000'))
+        self.binance_base_url = os.getenv('BINANCE_BASE_URL', 'https://fapi.binance.com').strip()
+        self.binance_ws_url = os.getenv('BINANCE_WS_URL', 'wss://fstream.binance.com/ws/').strip()
         
         if not self.database_url:
             raise ValueError("DATABASE_URL environment variable is required")
@@ -78,26 +82,60 @@ class ProductionCollector:
             logger.info(f"✅ Validated {len(SYMBOLS_200)} symbols for MM analysis")
             logger.info(f"📊 Starting with: {SYMBOLS_200[0]}")
             logger.info(f"📊 Ultra low-cap symbols: {len(SYMBOLS_200[-30:])}")
+
+            # Фильтрация по реально доступным Binance Futures USDT-перпам
+            self.active_symbols = await self._resolve_futures_symbols(SYMBOLS_200)
+            logger.info(f"✅ Resolved {len(self.active_symbols)} valid Futures symbols out of {len(SYMBOLS_200)}")
+            if len(self.active_symbols) < len(SYMBOLS_200):
+                missing = len(SYMBOLS_200) - len(self.active_symbols)
+                logger.warning(f"⚠️ Filtered out {missing} symbols not present on Binance Futures USDT-perp")
         except Exception as e:
             logger.error(f"❌ Symbol validation failed: {e}")
             raise
+
+    async def _resolve_futures_symbols(self, candidates):
+        """Запросить список доступных USDT-перпетуальных символов на Binance Futures и отфильтровать кандидатов."""
+        base = self.binance_base_url.rstrip('/')
+        url = f"{base}/fapi/v1/exchangeInfo"
+        timeout = aiohttp.ClientTimeout(total=10)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url) as resp:
+                    resp.raise_for_status()
+                    data = await resp.json()
+                    symbols = data.get('symbols', [])
+                    allowed = set(
+                        s.get('symbol') for s in symbols
+                        if s.get('contractType') in ('PERPETUAL', 'CURRENT_QUARTER', 'NEXT_QUARTER')
+                        and s.get('status') == 'TRADING'
+                        and s.get('quoteAsset') == 'USDT'
+                    )
+                    filtered = [sym for sym in candidates if sym in allowed]
+                    return filtered
+        except Exception as e:
+            logger.error(f"❌ Failed to resolve futures symbols from {url}: {e}. Fallback to original list.")
+            return list(candidates)
     
     async def start_batch_ingestor(self):
         """Запуск batch ingestor с 200 символами"""
         logger.info("🚀 Starting PostgreSQL batch ingestor...")
+        logger.info(f"🌐 Binance REST: {self.binance_base_url}")
+        logger.info(f"🌐 Binance WS:   {self.binance_ws_url}")
         
         # BatchIngestor ожидает явные аргументы: соединение, список символов, каналы, число шардов
         channels = ['bookTicker', 'aggTrade']
+        symbols = self.active_symbols if self.active_symbols else SYMBOLS_200
         self.ingestor = BatchIngestor(
             db_connection_string=self.database_url,
-            symbols=SYMBOLS_200,
+            symbols=symbols,
             channels=channels,
             shards_count=self.shards,
+            ws_base_url=self.binance_ws_url,
         )
         
         # Запуск в background task
         asyncio.create_task(self.ingestor.start())
-        logger.info(f"✅ Batch ingestor started with {len(SYMBOLS_200)} symbols")
+        logger.info(f"✅ Batch ingestor started with {len(symbols)} symbols")
     
     async def start_health_monitor(self):
         """Запуск health monitoring dashboard"""

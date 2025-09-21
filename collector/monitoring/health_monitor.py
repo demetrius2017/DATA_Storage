@@ -4,6 +4,7 @@ Real-time Monitoring System for OrderBook Data Collection
 """
 
 import asyncio
+import os
 import asyncpg
 import json
 import time
@@ -453,7 +454,15 @@ class MonitoringDashboard:
             async with self.db_pool.acquire() as conn:
                 result = await conn.fetchval('SELECT 1')
                 if result == 1:
-                    return web.json_response({'status': 'healthy', 'database': 'ok'})
+                    # Добавляем сводку по эндпоинтам для быстрой проверки окружения
+                    return web.json_response({
+                        'status': 'healthy', 
+                        'database': 'ok',
+                        'binance': {
+                            'base_url': os.getenv('BINANCE_BASE_URL', 'https://fapi.binance.com'),
+                            'ws_url': os.getenv('BINANCE_WS_URL', 'wss://fstream.binance.com/ws/')
+                        }
+                    })
         except Exception as e:
             return web.json_response(
                 {'status': 'unhealthy', 'error': str(e)}, 

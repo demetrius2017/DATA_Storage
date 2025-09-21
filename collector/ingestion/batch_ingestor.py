@@ -19,6 +19,7 @@ from contextlib import asynccontextmanager
 import signal
 import sys
 import os
+from urllib.parse import urlparse
 
 # Настройка логирования
 logging.basicConfig(
@@ -203,12 +204,15 @@ class DatabaseManager:
 class WebSocketStreamManager:
     """Менеджер WebSocket потоков с шардированием"""
     
-    def __init__(self, db_manager: DatabaseManager, stream_configs: List[StreamConfig]):
+    def __init__(self, db_manager: DatabaseManager, stream_configs: List[StreamConfig], ws_base_url: Optional[str] = None):
         self.db_manager = db_manager
         self.stream_configs = stream_configs
         self.buffers: Dict[int, BatchBuffer] = {}
         self.running = False
         self.tasks: List[asyncio.Task] = []
+        # Базовый WS URL (из env), по умолчанию Binance Futures
+        self.ws_base_url = (ws_base_url or os.getenv('BINANCE_WS_URL', 'wss://fstream.binance.com/ws/')).strip()
+        logger.info(f"Binance WS base set to: {self.ws_base_url}")
         
         # Статистика
         self.stats = {
@@ -259,7 +263,11 @@ class WebSocketStreamManager:
                         streams.append(f"{symbol.lower()}@{channel}")
                 
                 stream_names = "/".join(streams)
-                url = f"wss://fstream.binance.com/stream?streams={stream_names}"
+                # Построение combined stream URL на основе базового ws хоста
+                # Принимаем base вида wss://fstream.binance.com/ws/ или wss://fstream.binance.com
+                parsed = urlparse(self.ws_base_url)
+                host = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else self.ws_base_url.rstrip('/')
+                url = f"{host}/stream?streams={stream_names}"
                 
                 async with websockets.connect(url) as websocket:
                     logger.info(f"Шард {shard_id} подключен, символы: {config.symbols}")
@@ -475,12 +483,14 @@ class BatchIngestor:
                  db_connection_string: str,
                  symbols: List[str],
                  channels: List[str] = None,
-                 shards_count: int = 4):
+                 shards_count: int = 4,
+                 ws_base_url: Optional[str] = None):
         
         self.db_connection_string = db_connection_string
         self.symbols = symbols
         self.channels = channels or ['bookTicker', 'aggTrade']
         self.shards_count = min(shards_count, len(symbols))
+        self.ws_base_url = (ws_base_url or os.getenv('BINANCE_WS_URL', 'wss://fstream.binance.com/ws/')).strip()
         
         self.db_manager = DatabaseManager(db_connection_string)
         self.stream_manager = None
@@ -496,7 +506,7 @@ class BatchIngestor:
         stream_configs = self._create_stream_configs()
         
         # Запуск stream manager
-        self.stream_manager = WebSocketStreamManager(self.db_manager, stream_configs)
+        self.stream_manager = WebSocketStreamManager(self.db_manager, stream_configs, ws_base_url=self.ws_base_url)
         await self.stream_manager.start()
         
         logger.info("BatchIngestor запущен")
