@@ -195,7 +195,11 @@ async def main():
             if attempt == 29:
                 logger.error(f"❌ PostgreSQL not available after 30 attempts: {e}")
                 sys.exit(1)
-            logger.info(f"⏳ Attempt {attempt + 1}/30: PostgreSQL not ready, waiting...")
+            # Периодически печатаем причину, чтобы упростить диагностику (например, firewall/SSL)
+            if attempt == 0 or (attempt + 1) % 5 == 0:
+                logger.warning(f"⏳ Attempt {attempt + 1}/30: PostgreSQL not ready: {e}")
+            else:
+                logger.info(f"⏳ Attempt {attempt + 1}/30: PostgreSQL not ready, waiting...")
             time.sleep(2)
     
     # Запуск collector
