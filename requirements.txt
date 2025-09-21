@@ -5,6 +5,8 @@ aiohttp>=3.8.0
 # 🗄️ PostgreSQL dependencies
 asyncpg>=0.29.0
 psycopg2-binary>=2.9.0
+SQLAlchemy>=2.0.20
+alembic>=1.12.0
 
 # 📊 Обработка данных
 pandas>=2.0.0
@@ -28,6 +30,22 @@ pydantic-settings>=2.0.0
 # 📝 Logging
 structlog>=23.0.0
 colorlog>=6.7.0
+
+# 🔧 Utilities
+click>=8.1.0
+typer>=0.9.0
+rich>=13.5.0
+python-dateutil>=2.8.0
+pytz>=2023.3
+
+# 🔐 Cryptography for secure connections
+cryptography>=41.0.0
+
+# 🚀 JSON processing
+orjson>=3.9.0
+
+# 🗃️ Redis client (for caching and rate limiting)
+redis>=4.6.0
 
 # 🔐 Security
 cryptography>=41.0.0

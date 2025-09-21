@@ -18,6 +18,17 @@ aiohttp>=3.9.0
 
 # Сжатие и архивация
 lz4>=4.0.0
+
+# TimescaleDB и мониторинг
+pyarrow>=14.0.0
+structlog>=23.2.0
+prometheus-client>=0.19.0
+
+# Development & Testing
+pytest>=7.4.3
+pytest-asyncio>=0.21.1
+black>=23.12.1
+flake8>=6.1.0
 zstandard>=0.22.0
 
 # Мониторинг и логирование
