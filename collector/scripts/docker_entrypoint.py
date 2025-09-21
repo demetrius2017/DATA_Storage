@@ -36,7 +36,7 @@ class ProductionCollector:
     
     def __init__(self):
         self.ingestor = None
-    self.monitoring_system = None
+        self.monitoring_system = None
         self.db_connection = None
         self.shutdown_event = asyncio.Event()
         
