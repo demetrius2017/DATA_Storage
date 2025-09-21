@@ -176,6 +176,22 @@ CREATE INDEX IF NOT EXISTS idx_ob_top5_symbol_ts ON marketdata.orderbook_top5 (s
 -- [pre-cleanup] Удаляем устаревшие объекты, чтобы избежать ошибки "is not a view"
 -- Функция зависит от bt_1s/trade_1s, поэтому сначала удаляем функцию, затем представления
 DROP FUNCTION IF EXISTS marketdata.get_yesterday_training_data(bigint, date);
+-- Если ранее агрегаты создавались как TABLE, переименуем их в legacy с отметкой времени
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.tables 
+        WHERE table_schema = 'marketdata' AND table_name = 'bt_1s'
+    ) THEN
+        EXECUTE format('ALTER TABLE marketdata.bt_1s RENAME TO bt_1s_legacy_%s', to_char(now(), 'YYYYMMDDHH24MISS'));
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM information_schema.tables 
+        WHERE table_schema = 'marketdata' AND table_name = 'trade_1s'
+    ) THEN
+        EXECUTE format('ALTER TABLE marketdata.trade_1s RENAME TO trade_1s_legacy_%s', to_char(now(), 'YYYYMMDDHH24MISS'));
+    END IF;
+END$$;
 DROP MATERIALIZED VIEW IF EXISTS marketdata.bt_1s CASCADE;
 DROP VIEW IF EXISTS marketdata.bt_1s CASCADE;
 DROP MATERIALIZED VIEW IF EXISTS marketdata.trade_1s CASCADE;
