@@ -20,6 +20,7 @@ import signal
 import sys
 import os
 from urllib.parse import urlparse
+import ssl
 
 # Настройка логирования
 logging.basicConfig(
@@ -77,8 +78,42 @@ class DatabaseManager:
     async def initialize(self):
         """Инициализация пула соединений и кэша символов"""
         logger.info("Инициализация пула соединений PostgreSQL...")
+        # Настраиваем SSL для DigitalOcean (sslmode=require) из connection_string
+        ssl_ctx = None
+        try:
+            parsed = urlparse(self.connection_string)
+            # parse query manually (asyncpg doesn't honor sslmode in DSN), fallback to require
+            query = {}
+            if parsed.query:
+                for part in parsed.query.split('&'):
+                    if not part:
+                        continue
+                    k, _, v = part.partition('=')
+                    query[k] = v
+            sslmode = (query.get('sslmode') or os.getenv('DB_SSLMODE') or 'require').lower()
+            if sslmode in ('require', 'verify-none'):
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                ssl_ctx = ctx
+            elif sslmode in ('verify-full', 'verify-ca'):
+                cafile = os.getenv('DB_SSLROOTCERT')
+                if cafile and os.path.exists(cafile):
+                    ctx = ssl.create_default_context(cafile=cafile)
+                else:
+                    ctx = ssl.create_default_context()
+                ctx.check_hostname = True
+                ctx.verify_mode = ssl.CERT_REQUIRED
+                ssl_ctx = ctx
+            else:
+                ssl_ctx = False
+        except Exception as e:
+            logger.warning(f"Не удалось настроить SSL контекст: {e}. Будет использована стандартная конфигурация.")
+            ssl_ctx = None
+
         self.pool = await asyncpg.create_pool(
-            self.connection_string,
+            dsn=self.connection_string,
+            ssl=ssl_ctx,
             min_size=2,
             max_size=self.pool_size,
             command_timeout=30
