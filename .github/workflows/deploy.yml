@@ -10,6 +10,16 @@ on:
       - 'requirements.txt'
       - '.github/workflows/deploy.yml'
   workflow_dispatch:
+    inputs:
+      no_cache:
+        description: 'Build Docker image without using cache'
+        required: false
+        type: boolean
+        default: false
+      cache_bust:
+        description: 'Optional cache-bust token (e.g., timestamp)'
+        required: false
+        type: string
 
 concurrency:
   group: production-deploy-${{ github.ref }}
@@ -61,6 +71,9 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          no-cache: ${{ inputs.no_cache }}
+          build-args: |
+            CACHE_BUST=${{ inputs.cache_bust }}
 
       - name: 🎯 Deploy to Production Server
         uses: appleboy/ssh-action@v1.0.0
@@ -214,6 +227,38 @@ jobs:
             fi
 
             echo "🎉 Deployment completed successfully!"
+
+      - name: ✅ Post-deploy Verify (depth)
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          timeout: 30s
+          command_timeout: 10m
+          script: |
+            set -e
+            cd /opt/orderbook-collector
+            # Extract DATABASE_URL from .env (written in previous step)
+            if [ -f .env ]; then
+              DB_URL=$(grep '^DATABASE_URL=' .env | sed 's/^DATABASE_URL=//')
+            else
+              echo '.env not found' >&2
+              exit 2
+            fi
+            echo '== Running post-deploy verify_ingestion =='
+            ARGS="--freshness-seconds 120 --min-bt-per-minute 10 --min-tr-per-minute 10 --min-de-per-minute 10 --depth-required"
+            set +e
+            OUTPUT=$(docker compose exec -T -e DATABASE_URL="$DB_URL" collector python3 -m collector.tools.verify_ingestion ${ARGS} 2>&1)
+            CODE=$?
+            set -e
+            echo "$OUTPUT"
+            if [ ${CODE} -ne 0 ]; then
+              echo "Post-deploy verification failed with code ${CODE}" >&2
+              exit ${CODE}
+            fi
+            echo "Post-deploy verification passed"
 
       - name: 📊 Deployment Summary
         run: |
