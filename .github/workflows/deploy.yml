@@ -27,7 +27,8 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}/orderbook-collector
+  # Use a lowercase GHCR repository path to comply with Docker naming rules
+  IMAGE_NAME: demetrius2017/data_storage/orderbook-collector
   # Deterministic tag to avoid 'latest' ambiguity; branch-shortSHA
   IMAGE_TAG: ${{ github.ref_name }}-${{ github.sha }}
 
