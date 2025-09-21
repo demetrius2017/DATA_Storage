@@ -202,7 +202,8 @@ SELECT
     AVG(EXTRACT(EPOCH FROM (ts_ingest - ts_exchange)) * 1000) AS avg_latency_ms
 
 FROM marketdata.book_ticker
-GROUP BY ts_second, symbol_id;
+GROUP BY ts_second, symbol_id
+WITH NO DATA;
 
 -- Настройка refresh policy для bt_1s
 SELECT add_continuous_aggregate_policy('marketdata.bt_1s',
@@ -235,7 +236,8 @@ SELECT
     LAST(price, ts_exchange) AS price_close
 
 FROM marketdata.trades
-GROUP BY ts_second, symbol_id;
+GROUP BY ts_second, symbol_id
+WITH NO DATA;
 
 -- Настройка refresh policy для trade_1s
 SELECT add_continuous_aggregate_policy('marketdata.trade_1s',
