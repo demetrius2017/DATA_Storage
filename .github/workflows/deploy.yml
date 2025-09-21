@@ -11,6 +11,10 @@ on:
       - '.github/workflows/deploy.yml'
   workflow_dispatch:
 
+concurrency:
+  group: production-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}/orderbook-collector
@@ -71,6 +75,13 @@ jobs:
           port: ${{ secrets.SERVER_PORT || 22 }}
           script: |
             set -e
+
+            # 0) Глобальная блокировка на сервере, чтобы избежать гонок при параллельных деплоях
+            # Если блок занят — выходим без ошибки (второй запуск уступает первому)
+            exec 9>/var/lock/orderbook-deploy.lock || true
+            if command -v flock >/dev/null 2>&1; then
+              flock -n 9 || { echo "Another deploy is running, exiting"; exit 0; }
+            fi
             
             # 1) Подготовка окружения: Docker Engine + Compose (устойчиво к разным образам Ubuntu)
             # 1.a) Устанавливаем Docker из официального репозитория (если отсутствует)
