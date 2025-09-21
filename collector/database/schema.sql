@@ -173,6 +173,14 @@ CREATE INDEX IF NOT EXISTS idx_ob_top5_symbol_ts ON marketdata.orderbook_top5 (s
 -- 7. CONTINUOUS AGGREGATES (МАТЕРИАЛИЗОВАННЫЕ ПРЕДСТАВЛЕНИЯ)
 -- ==========================================================
 
+-- [pre-cleanup] Удаляем устаревшие объекты, чтобы избежать ошибки "is not a view"
+-- Функция зависит от bt_1s/trade_1s, поэтому сначала удаляем функцию, затем представления
+DROP FUNCTION IF EXISTS marketdata.get_yesterday_training_data(bigint, date);
+DROP MATERIALIZED VIEW IF EXISTS marketdata.bt_1s CASCADE;
+DROP VIEW IF EXISTS marketdata.bt_1s CASCADE;
+DROP MATERIALIZED VIEW IF EXISTS marketdata.trade_1s CASCADE;
+DROP VIEW IF EXISTS marketdata.trade_1s CASCADE;
+
 -- 7.1 Агрегаты book_ticker по 1 секунде (обычный VIEW без Timescale continuous)
 -- Заменяем TSL-функции (FIRST/LAST/политики) на window-агрегации PostgreSQL
 CREATE OR REPLACE VIEW marketdata.bt_1s AS
