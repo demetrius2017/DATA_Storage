@@ -60,44 +60,59 @@ jobs:
 
       - name: 🎯 Deploy to Production Server
         uses: appleboy/ssh-action@v1.0.0
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
+          BINANCE_SECRET_KEY: ${{ secrets.BINANCE_SECRET_KEY }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SERVER_PORT || 22 }}
           script: |
-            # Навигация в рабочую директорию
-            cd /opt/orderbook-collector || mkdir -p /opt/orderbook-collector && cd /opt/orderbook-collector
+            set -e
             
-            # Создание .env файла с secrets
+            # 1) Подготовка окружения: docker + compose
+            if ! command -v docker >/dev/null 2>&1; then
+              apt-get update -y && apt-get install -y docker.io
+              systemctl enable --now docker || true
+            fi
+            if ! docker compose version >/dev/null 2>&1; then
+              apt-get update -y && apt-get install -y docker-compose-plugin
+            fi
+
+            # 2) Рабочая директория
+            mkdir -p /opt/orderbook-collector
+            cd /opt/orderbook-collector
+
+            # 3) Обновляем .env c секретами
             cat > .env << EOF
-            POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
-            BINANCE_API_KEY=${{ secrets.BINANCE_API_KEY }}
-            BINANCE_SECRET_KEY=${{ secrets.BINANCE_SECRET_KEY }}
+            DATABASE_URL=${DATABASE_URL}
+            BINANCE_API_KEY=${BINANCE_API_KEY}
+            BINANCE_SECRET_KEY=${BINANCE_SECRET_KEY}
+            LOG_LEVEL=INFO
+            ENVIRONMENT=production
             EOF
-            
-            # Загрузка docker-compose файла
+
+            # 4) Забираем актуальный docker-compose.production.yml
             curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
                  -H "Accept: application/vnd.github.v3.raw" \
                  -o docker-compose.yml \
                  -L https://api.github.com/repos/${{ github.repository }}/contents/docker-compose.production.yml
-            
-            # Остановка старых контейнеров
-            docker-compose down || true
-            
-            # Обновление образов
-            docker-compose pull
-            
-            # Запуск новых контейнеров
-            docker-compose up -d
-            
-            # Проверка состояния
-            sleep 30
-            docker-compose ps
-            
-            # Health check
+
+            # 5) Логин в GHCR (на случай приватного образа)
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin || true
+
+            # 6) Рестарт через docker compose
+            docker compose down || true
+            docker compose pull
+            docker compose up -d
+
+            # 7) Проверка состояния
+            sleep 20
+            docker compose ps
             curl -f http://localhost:8000/health || exit 1
-            
+
             echo "🎉 Deployment completed successfully!"
 
       - name: 📊 Deployment Summary
