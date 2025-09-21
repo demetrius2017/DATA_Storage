@@ -173,100 +173,113 @@ CREATE INDEX IF NOT EXISTS idx_ob_top5_symbol_ts ON marketdata.orderbook_top5 (s
 -- 7. CONTINUOUS AGGREGATES (МАТЕРИАЛИЗОВАННЫЕ ПРЕДСТАВЛЕНИЯ)
 -- ==========================================================
 
--- 7.1 Агрегаты book_ticker по 1 секунде
-CREATE MATERIALIZED VIEW IF NOT EXISTS marketdata.bt_1s
-WITH (timescaledb.continuous) AS
-SELECT 
-    time_bucket('1 second', ts_exchange) AS ts_second,
+-- 7.1 Агрегаты book_ticker по 1 секунде (обычный VIEW без Timescale continuous)
+-- Заменяем TSL-функции (FIRST/LAST/политики) на window-агрегации PostgreSQL
+CREATE OR REPLACE VIEW marketdata.bt_1s AS
+WITH s AS (
+    SELECT
+        time_bucket('1 second', ts_exchange) AS ts_second,
+        symbol_id,
+        ts_exchange,
+        mid,
+        spread,
+        bid_qty,
+        ask_qty,
+        ts_ingest
+    FROM marketdata.book_ticker
+),
+w AS (
+    SELECT
+        ts_second,
+        symbol_id,
+        ts_exchange,
+        mid,
+        spread,
+        -- Средние и счетчики по окну 1s
+        AVG(spread) OVER (PARTITION BY symbol_id, ts_second) AS spread_mean,
+        MIN(spread) OVER (PARTITION BY symbol_id, ts_second) AS spread_min,
+        MAX(spread) OVER (PARTITION BY symbol_id, ts_second) AS spread_max,
+        STDDEV(spread) OVER (PARTITION BY symbol_id, ts_second) AS spread_std,
+        AVG(bid_qty + ask_qty) OVER (PARTITION BY symbol_id, ts_second) AS total_qty_mean,
+        COUNT(*) OVER (PARTITION BY symbol_id, ts_second) AS update_count,
+        AVG(EXTRACT(EPOCH FROM (ts_ingest - ts_exchange)) * 1000) OVER (PARTITION BY symbol_id, ts_second) AS avg_latency_ms,
+        -- Ранг для выбора последнего значения в бакете
+        ROW_NUMBER() OVER (PARTITION BY symbol_id, ts_second ORDER BY ts_exchange DESC) AS rn,
+        -- Дополнительно high/low через оконные агрегации по mid
+        MAX(mid) OVER (PARTITION BY symbol_id, ts_second) AS mid_high,
+        MIN(mid) OVER (PARTITION BY symbol_id, ts_second) AS mid_low,
+        FIRST_VALUE(mid) OVER (PARTITION BY symbol_id, ts_second ORDER BY ts_exchange ASC) AS mid_open
+    FROM s
+)
+SELECT
+    ts_second,
     symbol_id,
-    
-    -- OHLC для mid price
-    FIRST(mid, ts_exchange) AS mid_open,
-    MAX(mid) AS mid_high,
-    MIN(mid) AS mid_low,
-    LAST(mid, ts_exchange) AS mid_close,
-    
-    -- Spread статистика
-    AVG(spread) AS spread_mean,
-    MIN(spread) AS spread_min,
-    MAX(spread) AS spread_max,
-    STDDEV(spread) AS spread_std,
-    
-    -- Volume
-    AVG(bid_qty + ask_qty) AS total_qty_mean,
-    
-    -- Количество обновлений
-    COUNT(*) AS update_count,
-    
-    -- Latency метрики
-    AVG(EXTRACT(EPOCH FROM (ts_ingest - ts_exchange)) * 1000) AS avg_latency_ms
+    mid_open,
+    mid_high,
+    mid_low,
+    mid        AS mid_close,
+    spread_mean,
+    spread_min,
+    spread_max,
+    spread_std,
+    total_qty_mean,
+    update_count,
+    avg_latency_ms
+FROM w
+WHERE rn = 1;
 
-FROM marketdata.book_ticker
-GROUP BY ts_second, symbol_id
-WITH NO DATA;
-
--- Настройка refresh policy для bt_1s
-SELECT add_continuous_aggregate_policy('marketdata.bt_1s',
-    start_offset => INTERVAL '1 hour',
-    end_offset => INTERVAL '1 minute',
-    schedule_interval => INTERVAL '1 minute',
-    if_not_exists => TRUE
-);
-
--- 7.2 Агрегаты trades по 1 секунде  
-CREATE MATERIALIZED VIEW IF NOT EXISTS marketdata.trade_1s
-WITH (timescaledb.continuous) AS
-SELECT 
-    time_bucket('1 second', ts_exchange) AS ts_second,
+-- 7.2 Агрегаты trades по 1 секунде (обычный VIEW)
+CREATE OR REPLACE VIEW marketdata.trade_1s AS
+WITH s AS (
+    SELECT
+        time_bucket('1 second', ts_exchange) AS ts_second,
+        symbol_id,
+        ts_exchange,
+        price,
+        qty,
+        is_buyer_maker
+    FROM marketdata.trades
+),
+w AS (
+    SELECT
+        ts_second,
+        symbol_id,
+        ts_exchange,
+        price,
+        qty,
+        is_buyer_maker,
+        COUNT(*) OVER (PARTITION BY symbol_id, ts_second) AS trade_count,
+        SUM(qty) OVER (PARTITION BY symbol_id, ts_second) AS vol_sum,
+        SUM(price * qty) OVER (PARTITION BY symbol_id, ts_second) AS price_qty_sum,
+        SUM(qty) OVER (PARTITION BY symbol_id, ts_second) AS qty_sum,
+        SUM(CASE WHEN is_buyer_maker = false THEN qty ELSE 0 END) OVER (PARTITION BY symbol_id, ts_second) AS buy_vol,
+        SUM(CASE WHEN is_buyer_maker = true THEN qty ELSE 0 END) OVER (PARTITION BY symbol_id, ts_second) AS sell_vol,
+        MAX(price) OVER (PARTITION BY symbol_id, ts_second) AS price_high,
+        MIN(price) OVER (PARTITION BY symbol_id, ts_second) AS price_low,
+        FIRST_VALUE(price) OVER (PARTITION BY symbol_id, ts_second ORDER BY ts_exchange ASC) AS price_open,
+        ROW_NUMBER() OVER (PARTITION BY symbol_id, ts_second ORDER BY ts_exchange DESC) AS rn
+    FROM s
+)
+SELECT
+    ts_second,
     symbol_id,
-    
-    -- Trade статистика
-    COUNT(*) AS trade_count,
-    SUM(qty) AS vol_sum,
-    SUM(price * qty) / SUM(qty) AS vwap,
-    
-    -- Buy/Sell imbalance
-    SUM(CASE WHEN is_buyer_maker = false THEN qty ELSE 0 END) AS buy_vol,
-    SUM(CASE WHEN is_buyer_maker = true THEN qty ELSE 0 END) AS sell_vol,
-    
-    -- Price движение
-    FIRST(price, ts_exchange) AS price_open,
-    MAX(price) AS price_high,
-    MIN(price) AS price_low,
-    LAST(price, ts_exchange) AS price_close
-
-FROM marketdata.trades
-GROUP BY ts_second, symbol_id
-WITH NO DATA;
-
--- Настройка refresh policy для trade_1s
-SELECT add_continuous_aggregate_policy('marketdata.trade_1s',
-    start_offset => INTERVAL '1 hour', 
-    end_offset => INTERVAL '1 minute',
-    schedule_interval => INTERVAL '1 minute',
-    if_not_exists => TRUE
-);
+    trade_count,
+    vol_sum,
+    CASE WHEN qty_sum > 0 THEN price_qty_sum / qty_sum ELSE NULL END AS vwap,
+    buy_vol,
+    sell_vol,
+    price_open,
+    price_high,
+    price_low,
+    price AS price_close
+FROM w
+WHERE rn = 1;
 
 -- 8. ПОЛИТИКИ RETENTION И КОМПРЕССИЯ
 -- =================================
-
--- Компрессия book_ticker старше 7 дней
-SELECT add_compression_policy('marketdata.book_ticker', INTERVAL '7 days', if_not_exists => TRUE);
-
--- Компрессия trades старше 7 дней
-SELECT add_compression_policy('marketdata.trades', INTERVAL '7 days', if_not_exists => TRUE);
-
--- Компрессия depth_events старше 3 дней (большой объём)
-SELECT add_compression_policy('marketdata.depth_events', INTERVAL '3 days', if_not_exists => TRUE);
-
--- Retention policy: удаление сырых данных старше 30 дней
-SELECT add_retention_policy('marketdata.book_ticker', INTERVAL '30 days', if_not_exists => TRUE);
-SELECT add_retention_policy('marketdata.trades', INTERVAL '30 days', if_not_exists => TRUE);  
-SELECT add_retention_policy('marketdata.depth_events', INTERVAL '7 days', if_not_exists => TRUE);
-
--- Агрегаты храним дольше - 90 дней
-SELECT add_retention_policy('marketdata.bt_1s', INTERVAL '90 days', if_not_exists => TRUE);
-SELECT add_retention_policy('marketdata.trade_1s', INTERVAL '90 days', if_not_exists => TRUE);
+-- Политики TimescaleDB (compression/retention/continuous aggregate policies) требуют TSL-лицензию
+-- и недоступны в окружении DigitalOcean с лицензией "apache". Поэтому здесь их НЕ используем.
+-- Ротация/очистка данных должна выполняться внешними задачами (cron/maintenance job) на уровне БД.
 
 -- 9. ФУНКЦИИ ДЛЯ "ВЧЕРАШНЕГО" ОБУЧЕНИЯ
 -- ====================================
