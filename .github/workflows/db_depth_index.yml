@@ -89,7 +89,7 @@ jobs:
             JOIN pg_namespace n ON n.oid = c.relnamespace
             WHERE n.nspname = '${SCHEMA}' AND c.relname = '${TABLE}' AND (i.indisunique OR i.indisprimary)
           )
-          SELECT COUNT(*) FROM cols WHERE colnames = ARRAY['symbol_id','ts_exchange','final_update_id'];"
+          SELECT COUNT(*) FROM cols WHERE colnames::text[] = ARRAY['symbol_id','ts_exchange','final_update_id']::text[];"
           echo "$SQL_EQUIV" > /tmp/equiv.sql
           EQUIV_CNT=$(psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -t -A -F, -f /tmp/equiv.sql)
           echo "Equivalent unique/primary indexes found: ${EQUIV_CNT}"
@@ -126,7 +126,7 @@ jobs:
             JOIN pg_namespace n ON n.oid = c.relnamespace
             WHERE n.nspname = '${SCHEMA}' AND c.relname = '${TABLE}' AND (i.indisunique OR i.indisprimary)
           )
-          SELECT COUNT(*) FROM cols WHERE colnames = ARRAY['symbol_id','ts_exchange','final_update_id'];"
+          SELECT COUNT(*) FROM cols WHERE colnames::text[] = ARRAY['symbol_id','ts_exchange','final_update_id']::text[];"
           echo "$SQL_EQUIV2" > /tmp/equiv2.sql
           EQUIV2_CNT=$(psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -t -A -F, -f /tmp/equiv2.sql)
           echo "Equivalent unique/primary indexes found: ${EQUIV2_CNT}"
