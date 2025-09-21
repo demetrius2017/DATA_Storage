@@ -17,7 +17,7 @@ sys.path.insert(0, '/app')
 
 from collector.config.symbols_mm_focused import SYMBOLS_200, validate_symbols
 from collector.ingestion.batch_ingestor import BatchIngestor
-from collector.monitoring.health_monitor import HealthMonitor
+from collector.monitoring.health_monitor import MonitoringSystem
 from collector.database.connection import DatabaseConnection
 
 # Настройка логирования
@@ -36,7 +36,7 @@ class ProductionCollector:
     
     def __init__(self):
         self.ingestor = None
-        self.health_monitor = None
+    self.monitoring_system = None
         self.db_connection = None
         self.shutdown_event = asyncio.Event()
         
@@ -106,15 +106,15 @@ class ProductionCollector:
         """Запуск health monitoring dashboard"""
         logger.info("📊 Starting health monitoring dashboard...")
         
-        self.health_monitor = HealthMonitor(
-            port=self.monitoring_port,
-            symbols=SYMBOLS_200,
-            database_url=self.database_url
+        # Используем MonitoringSystem, который поднимает aiohttp dashboard с /health
+        self.monitoring_system = MonitoringSystem(
+            db_connection_string=self.database_url,
+            dashboard_port=self.monitoring_port
         )
         
         # Запуск в background task
-        asyncio.create_task(self.health_monitor.start())
-        logger.info(f"✅ Health monitor started on port {self.monitoring_port}")
+        asyncio.create_task(self.monitoring_system.start())
+        logger.info(f"✅ Monitoring system started on port {self.monitoring_port}")
     
     async def wait_for_shutdown(self):
         """Ожидание сигнала на завершение"""
@@ -136,8 +136,8 @@ class ProductionCollector:
         if self.ingestor:
             tasks.append(self.ingestor.stop())
         
-        if self.health_monitor:
-            tasks.append(self.health_monitor.stop())
+        if self.monitoring_system:
+            tasks.append(self.monitoring_system.stop())
         
         if self.db_connection:
             tasks.append(self.db_connection.close())

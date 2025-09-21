@@ -137,9 +137,17 @@ jobs:
             docker compose up -d
 
             # 7) Проверка состояния
-            sleep 20
+            # Даем сервисам больше времени на старт, т.к. создается пул соединений и выполняется миграция схемы
+            sleep 30
             docker compose ps
-            curl -f http://localhost:8000/health || exit 1
+            if ! curl -fsS http://localhost:8000/health; then
+              echo "Health check failed. Dumping recent container logs..." >&2
+              docker compose logs --no-color --tail=200 collector || true
+              docker compose logs --no-color --tail=100 redis || true
+              # Показать статус/рестарты
+              docker ps -a --no-trunc || true
+              exit 1
+            fi
 
             echo "🎉 Deployment completed successfully!"
 
