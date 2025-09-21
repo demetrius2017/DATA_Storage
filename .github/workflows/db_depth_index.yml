@@ -78,7 +78,27 @@ jobs:
             echo "Refusing to create UNIQUE index: there are duplicate rows for (symbol_id, ts_exchange, final_update_id)." >&2
             exit 2
           fi
-          SQL_IDX="CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS ${INDEX_NAME}
+          # Check if an equivalent UNIQUE or PRIMARY index already exists on (symbol_id, ts_exchange, final_update_id)
+          SQL_EQUIV="WITH cols AS (
+            SELECT n.nspname, c.relname, i.indexrelid, i.indisunique, i.indisprimary,
+                   (SELECT array_agg(att.attname ORDER BY x.ord)
+                    FROM unnest(i.indkey) WITH ORDINALITY AS x(attnum, ord)
+                    JOIN pg_attribute att ON att.attrelid = c.oid AND att.attnum = x.attnum) AS colnames
+            FROM pg_index i
+            JOIN pg_class c ON c.oid = i.indrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = '${SCHEMA}' AND c.relname = '${TABLE}' AND (i.indisunique OR i.indisprimary)
+          )
+          SELECT COUNT(*) FROM cols WHERE colnames = ARRAY['symbol_id','ts_exchange','final_update_id'];"
+          echo "$SQL_EQUIV" > /tmp/equiv.sql
+          EQUIV_CNT=$(psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -t -A -F, -f /tmp/equiv.sql)
+          echo "Equivalent unique/primary indexes found: ${EQUIV_CNT}"
+          if [ "${EQUIV_CNT}" != "0" ]; then
+            echo "An equivalent UNIQUE/PRIMARY index already exists. Skipping creation."
+            exit 0
+          fi
+          # Timescale hypertables do not support CONCURRENTLY; create non-concurrently
+          SQL_IDX="CREATE UNIQUE INDEX IF NOT EXISTS ${INDEX_NAME}
           ON ${SCHEMA}.${TABLE} (symbol_id, ts_exchange, final_update_id);"
           echo "$SQL_IDX" > /tmp/create_index.sql
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /tmp/create_index.sql
@@ -89,12 +109,33 @@ jobs:
           TABLE: ${{ github.event.inputs.table }}
           INDEX_NAME: ${{ github.event.inputs.index_name }}
         run: |
+          # Accept success if either the specific index exists by name OR an equivalent unique/primary index on the same columns exists
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -t -A -F, -c "SELECT indexname FROM pg_indexes WHERE schemaname='${SCHEMA}' AND tablename='${TABLE}' AND indexname='${INDEX_NAME}';" > /tmp/idx.txt
           echo "Index lookup: $(cat /tmp/idx.txt)"
-          if ! grep -q "${INDEX_NAME}" /tmp/idx.txt ; then
-            echo "Index ${INDEX_NAME} not found or not created." >&2
-            exit 3
+          if grep -q "${INDEX_NAME}" /tmp/idx.txt ; then
+            echo "Index ${INDEX_NAME} is present."
+            exit 0
           fi
+          SQL_EQUIV2="WITH cols AS (
+            SELECT n.nspname, c.relname, i.indexrelid, i.indisunique, i.indisprimary,
+                   (SELECT array_agg(att.attname ORDER BY x.ord)
+                    FROM unnest(i.indkey) WITH ORDINALITY AS x(attnum, ord)
+                    JOIN pg_attribute att ON att.attrelid = c.oid AND att.attnum = x.attnum) AS colnames
+            FROM pg_index i
+            JOIN pg_class c ON c.oid = i.indrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = '${SCHEMA}' AND c.relname = '${TABLE}' AND (i.indisunique OR i.indisprimary)
+          )
+          SELECT COUNT(*) FROM cols WHERE colnames = ARRAY['symbol_id','ts_exchange','final_update_id'];"
+          echo "$SQL_EQUIV2" > /tmp/equiv2.sql
+          EQUIV2_CNT=$(psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -t -A -F, -f /tmp/equiv2.sql)
+          echo "Equivalent unique/primary indexes found: ${EQUIV2_CNT}"
+          if [ "${EQUIV2_CNT}" != "0" ]; then
+            echo "An equivalent UNIQUE/PRIMARY index exists; verification passes."
+            exit 0
+          fi
+          echo "Index ${INDEX_NAME} not found and no equivalent unique index detected." >&2
+          exit 3
 
       - name: Summary
         run: |
