@@ -76,11 +76,14 @@ def get_api_credentials(use_testnet: bool = True) -> Dict[str, str]:
             "ws_url": "wss://stream.binancefuture.com/ws/"
         }
     else:
+        # Разрешаем переопределение из env (.env.production)
+        base_url = os.getenv("BINANCE_BASE_URL", "https://fapi.binance.com")
+        ws_url = os.getenv("BINANCE_WS_URL", "wss://fstream.binance.com/ws/")
         return {
             "api_key": os.getenv("BINANCE_API_KEY", ""),
             "secret_key": os.getenv("BINANCE_SECRET_KEY", ""),
-            "base_url": "https://fapi.binance.com",
-            "ws_url": "wss://fstream.binance.com/ws/"
+            "base_url": base_url,
+            "ws_url": ws_url
         }
 
 
