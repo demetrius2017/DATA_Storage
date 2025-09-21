@@ -100,6 +100,12 @@ async def main():
             )
             collectors.append(collector)
         
+        # Инициализируем хранилища (PostgreSQL/CSV) до старта сбора
+        try:
+            await asyncio.gather(*(dm.initialize() for dm in data_managers))
+        except Exception as e:
+            logger.error(f"Storage initialization failed: {e}")
+
         # Мониторинг
         if args.monitor:
             health_monitor = HealthMonitor(collectors[0], config)  # Используем первый коллектор для мониторинга

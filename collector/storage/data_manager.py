@@ -83,6 +83,7 @@ class DataManager:
                     'name': os.getenv('DB_NAME'),
                     'user': os.getenv('DB_USER'),
                     'password': os.getenv('DB_PASSWORD'),
+                    'sslmode': os.getenv('DB_SSLMODE', 'require'),
                     'batch_size': self.config.get('storage', {}).get('batch_size', 100),
                     'flush_interval': self.config.get('storage', {}).get('flush_interval', 5),
                     'pool_size': self.config.get('postgresql', {}).get('pool_size', 20)
@@ -139,6 +140,37 @@ class DataManager:
                 
         except Exception as e:
             self.logger.error(f"Error saving record: {e}")
+
+    async def save_orderbook_raw(self, raw: Dict[str, Any]) -> None:
+        """
+        Сохранение сырого события orderbook (как приходит из Binance WS) напрямую в PostgreSQL.
+
+        Если PostgreSQL недоступен, выполняется graceful fallback в CSV с преобразованием.
+        """
+        try:
+            if self.storage_type == 'postgresql' and self.postgres_manager:
+                symbol = raw.get('s', 'UNKNOWN')
+                ob_data = create_orderbook_data(symbol, raw)
+                ok = await self.postgres_manager.store_orderbook(ob_data)
+                if ok:
+                    self.records_written += 1
+                    return
+                # если не удалось — падаем в CSV ниже
+
+            # Fallback: преобразуем в упрощенную запись и пишем в CSV
+            simplified = {
+                'exchange': 'binance-futures',
+                'symbol': raw.get('s', 'UNKNOWN'),
+                'timestamp': raw.get('E', 0) * 1000,
+                'local_timestamp': int(datetime.now().timestamp() * 1_000_000),
+                'ask_amount': float(raw['a'][0][1]) if raw.get('a') else None,
+                'ask_price': float(raw['a'][0][0]) if raw.get('a') else None,
+                'bid_price': float(raw['b'][0][0]) if raw.get('b') else None,
+                'bid_amount': float(raw['b'][0][1]) if raw.get('b') else None,
+            }
+            await self._save_to_csv(simplified)
+        except Exception as e:
+            self.logger.error(f"Error in save_orderbook_raw: {e}")
     
     async def _save_to_postgresql(self, record: Dict[str, Any]) -> None:
         """

@@ -12,6 +12,7 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 import os
 from contextlib import asynccontextmanager
+import ssl
 
 @dataclass
 class OrderBookData:
@@ -64,13 +65,47 @@ class PostgreSQLManager:
             self.logger.info("🔌 Инициализация PostgreSQL connection pool...")
             
             # Параметры подключения
+            # SSL configuration according to sslmode
+            sslmode = (
+                self.config.get('sslmode')
+                or os.getenv('DB_SSLMODE')
+                or 'require'
+            ).lower()
+
+            ssl_context: ssl.SSLContext | bool
+            if sslmode in ('disable', 'allow', 'prefer'):
+                # allow unencrypted (not recommended); here we set False to let asyncpg decide
+                ssl_context = False
+            elif sslmode in ('require', 'verify-none'):
+                # Encrypt without verifying server cert (closest to libpq require)
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                ssl_context = ctx
+            elif sslmode in ('verify-full', 'verify-ca'):
+                # Strict verification using system CAs (or custom CA via SSLROOTCERT)
+                cafile = os.getenv('DB_SSLROOTCERT')
+                if cafile and os.path.exists(cafile):
+                    ctx = ssl.create_default_context(cafile=cafile)
+                else:
+                    ctx = ssl.create_default_context()
+                ctx.check_hostname = True
+                ctx.verify_mode = ssl.CERT_REQUIRED
+                ssl_context = ctx
+            else:
+                # Fallback to require semantics
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                ssl_context = ctx
+
             connection_params = {
                 'host': self.config['host'],
                 'port': self.config['port'],
                 'database': self.config['name'],
                 'user': self.config['user'],
                 'password': self.config['password'],
-                'ssl': 'require',
+                'ssl': ssl_context,
                 'min_size': max(1, self.config.get('pool_size', 20) // 10),  # Минимум 1, максимум pool_size/10
                 'max_size': self.config.get('pool_size', 20),
                 'command_timeout': self.config.get('pool_timeout', 60),  # Увеличил таймаут
@@ -175,6 +210,10 @@ class PostgreSQLManager:
         """Массовая вставка данных из буфера в PostgreSQL"""
         if not self._batch_buffer:
             return True
+        if not self.pool:
+            self.logger.error("❌ Ошибка batch flush: connection pool is not initialized")
+            # do not drop data silently; keep in buffer for later retry
+            return False
         
         try:
             self.logger.debug(f"📦 Flush batch: {len(self._batch_buffer)} записей")

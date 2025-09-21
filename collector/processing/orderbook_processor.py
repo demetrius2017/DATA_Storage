@@ -60,11 +60,13 @@ class OrderBookProcessor:
                                 f"first_ask: {data.get('a', [[]])[0] if data.get('a') else 'None'}")
                 return
                 
-            # Формирование записи
-            record = self._create_record(data, best_bid, best_ask)
-            
-            # Сохранение
-            await self.data_manager.save_record(record)
+            # Если доступна прямая запись сырых данных в PostgreSQL — используем её
+            if getattr(self.data_manager, 'storage_type', 'csv') == 'postgresql' and hasattr(self.data_manager, 'save_orderbook_raw'):
+                await self.data_manager.save_orderbook_raw(data)
+            else:
+                # Формирование упрощенной записи для CSV
+                record = self._create_record(data, best_bid, best_ask)
+                await self.data_manager.save_record(record)
             
             self.processed_count += 1
             self.last_update_time = datetime.now()

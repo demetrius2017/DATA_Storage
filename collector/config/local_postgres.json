@@ -1,0 +1,11 @@
+{
+  "api": {
+    "use_testnet": false
+  },
+  "storage": {
+    "type": "postgresql",
+    "batch_size": 100,
+    "flush_interval": 2,
+    "rotation_hours": 24
+  }
+}

@@ -1,5 +1,24 @@
 # 🚀 POSTGRES ORDERBOOK SYSTEM DEPLOYMENT
 
+> Deployment status (2025-09-21): Redeploy prepared to enforce Binance Futures endpoints (REST=https://fapi.binance.com, WS=wss://fstream.binance.com/ws/). Health endpoint now exposes active endpoints. Entrypoint filters symbols to valid Futures USDT-perp. After rollout, verify http://178.128.24.209:8000/health and confirm non-zero 5/60m ingestion counts.
+
+### 🔒 One‑shot настройка DigitalOcean Firewall (без деплоя)
+
+```
+# Предусловия: экспортируйте DO_TOKEN и укажите droplet и источники
+export DO_TOKEN=...                # Personal Access Token DO
+export DO_DROPLET_ID=123456789     # или DO_DROPLET_NAME=your-droplet
+export DO_ALLOW_8000_SOURCES="203.0.113.10/32,198.51.100.0/24"  # кто может видеть 8000/tcp
+
+# Прогон dry-run (покажет payload)
+python3 collector/management/do_firewall_apply.py --dry-run
+
+# Применение
+python3 collector/management/do_firewall_apply.py
+
+# Проверка: должен открыться http://<droplet_public_ip>:8000/health
+```
+
 ## 📋 Компоненты системы
 
 - **PostgreSQL + TimescaleDB**: основное хранилище с hypertables для 200+ торговых пар
