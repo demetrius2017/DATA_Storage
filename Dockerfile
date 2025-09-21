@@ -43,7 +43,6 @@ RUN python3 -m pip install --no-cache-dir --upgrade pip && \
 
 # Copy application code
 COPY collector/ ./collector/
-COPY .env.production .env
 
 # Set ownership for all app files
 RUN chown -R collector:collector /app
