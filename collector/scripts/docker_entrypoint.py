@@ -86,17 +86,14 @@ class ProductionCollector:
         """Запуск batch ingestor с 200 символами"""
         logger.info("🚀 Starting PostgreSQL batch ingestor...")
         
-        config = {
-            'database_url': self.database_url,
-            'symbols': SYMBOLS_200,
-            'batch_size': self.batch_size,
-            'flush_interval': self.flush_interval,
-            'shards': self.shards,
-            'max_retries': int(os.getenv('MAX_RETRIES', '5')),
-            'enable_monitoring': True
-        }
-        
-        self.ingestor = BatchIngestor(config)
+        # BatchIngestor ожидает явные аргументы: соединение, список символов, каналы, число шардов
+        channels = ['bookTicker', 'aggTrade']
+        self.ingestor = BatchIngestor(
+            db_connection_string=self.database_url,
+            symbols=SYMBOLS_200,
+            channels=channels,
+            shards_count=self.shards,
+        )
         
         # Запуск в background task
         asyncio.create_task(self.ingestor.start())
