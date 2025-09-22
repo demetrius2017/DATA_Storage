@@ -52,9 +52,26 @@ class ProductionCollector:
         self.monitoring_port = int(os.getenv('MONITORING_PORT', '8000'))
         self.binance_base_url = os.getenv('BINANCE_BASE_URL', 'https://fapi.binance.com').strip()
         self.binance_ws_url = os.getenv('BINANCE_WS_URL', 'wss://fstream.binance.com/ws/').strip()
+        # Управление количеством символов и стартовой точкой
+        self.total_symbols_limit = None
+        try:
+            _lim = os.getenv('TOTAL_SYMBOLS', '').strip()
+            if _lim:
+                self.total_symbols_limit = max(0, int(_lim))
+        except Exception:
+            self.total_symbols_limit = None
+        self.starting_symbol = os.getenv('STARTING_SYMBOL', 'SOLUSDT').strip().upper()
         # Depth настройки
         self.enable_depth = os.getenv('ENABLE_DEPTH', 'false').strip().lower() in ('1', 'true', 'yes')
         self.depth_top_symbols_env = os.getenv('DEPTH_TOP_SYMBOLS', '')
+        # Watchdog зависших запросов
+        self.enable_db_watchdog = os.getenv('ENABLE_DB_WATCHDOG', 'true').strip().lower() in ('1','true','yes')
+        try:
+            self.db_watchdog_interval = int(os.getenv('DB_WATCHDOG_INTERVAL', '60'))  # сек
+            self.db_watchdog_threshold = int(os.getenv('DB_WATCHDOG_THRESHOLD', '120'))  # сек
+        except Exception:
+            self.db_watchdog_interval = 60
+            self.db_watchdog_threshold = 120
         
         if not self.database_url:
             raise ValueError("DATABASE_URL environment variable is required")
@@ -113,8 +130,25 @@ class ProductionCollector:
             logger.info(f"📊 Ultra low-cap symbols: {len(SYMBOLS_200[-30:])}")
 
             # Фильтрация по реально доступным Binance Futures USDT-перпам
-            self.active_symbols = await self._resolve_futures_symbols(SYMBOLS_200)
-            logger.info(f"✅ Resolved {len(self.active_symbols)} valid Futures symbols out of {len(SYMBOLS_200)}")
+            # Сначала фильтруем кандидатов по доступности на Binance Futures
+            resolved = await self._resolve_futures_symbols(SYMBOLS_200)
+            logger.info(f"✅ Resolved {len(resolved)} valid Futures symbols out of {len(SYMBOLS_200)}")
+            # Порядок: используем исходный порядок SYMBOLS_200 (убывание ликвидности),
+            # но ротируем так, чтобы STARTING_SYMBOL был первым, а далее — менее ликвидные
+            base_order = [s for s in SYMBOLS_200 if s in set(resolved)]
+            if self.starting_symbol in base_order:
+                idx = base_order.index(self.starting_symbol)
+                ordered = base_order[idx:] + base_order[:idx]
+            else:
+                ordered = base_order
+            # Лимит количества символов TOTAL_SYMBOLS (если указан)
+            if self.total_symbols_limit and self.total_symbols_limit > 0:
+                self.active_symbols = ordered[: self.total_symbols_limit]
+            else:
+                self.active_symbols = ordered
+            logger.info(
+                f"📊 Active symbols configured: {len(self.active_symbols)} (start='{self.starting_symbol}', limit={self.total_symbols_limit})"
+            )
             if len(self.active_symbols) < len(SYMBOLS_200):
                 missing = len(SYMBOLS_200) - len(self.active_symbols)
                 logger.warning(f"⚠️ Filtered out {missing} symbols not present on Binance Futures USDT-perp")
@@ -207,6 +241,82 @@ class ProductionCollector:
         # Запуск в background task
         asyncio.create_task(self.monitoring_system.start())
         logger.info(f"✅ Monitoring system started on port {self.monitoring_port}")
+
+        # Запускаем watchdog для зависших запросов в БД
+        if self.enable_db_watchdog:
+            asyncio.create_task(self._db_watchdog())
+            logger.info(
+                f"🛡️ DB watchdog enabled: interval={self.db_watchdog_interval}s, threshold={self.db_watchdog_threshold}s"
+            )
+
+    async def _db_watchdog(self):
+        """Периодически проверяет pg_stat_activity и отменяет висячие запросы > threshold."""
+        while True:
+            try:
+                import asyncpg, ssl
+                from urllib.parse import urlparse
+                # Настроим ssl как в init_database
+                ssl_ctx = None
+                try:
+                    parsed = urlparse(self.database_url)
+                    query = {}
+                    qstr = str(getattr(parsed, 'query', '') or '')
+                    if qstr:
+                        for part in qstr.split("&"):
+                            if not part:
+                                continue
+                            if "=" in part:
+                                k, v = part.split("=", 1)
+                            else:
+                                k, v = part, ''
+                            query[k] = v
+                    sslmode = (query.get('sslmode') or 'require').lower()
+                    if sslmode in ('disable', 'allow', 'prefer'):
+                        ssl_ctx = False
+                    elif sslmode in ('require','verify-none'):
+                        ctx = ssl.create_default_context()
+                        ctx.check_hostname = False
+                        ctx.verify_mode = ssl.CERT_NONE
+                        ssl_ctx = ctx
+                    elif sslmode in ('verify-full','verify-ca'):
+                        ctx = ssl.create_default_context()
+                        ctx.check_hostname = True
+                        ctx.verify_mode = ssl.CERT_REQUIRED
+                        ssl_ctx = ctx
+                except Exception:
+                    ssl_ctx = None
+
+                conn = await asyncpg.connect(self.database_url, ssl=ssl_ctx)
+                try:
+                    # Находим активные запросы, висящие дольше threshold, исключая системные/наш мониторинг
+                    rows = await conn.fetch(
+                        """
+                        SELECT pid, now() - query_start AS duration, state, application_name, query
+                        FROM pg_stat_activity
+                        WHERE datname = current_database()
+                          AND state = 'active'
+                          AND now() - query_start > $1::interval
+                          AND application_name NOT IN ('collector_monitor')
+                          AND query NOT ILIKE '%pg_stat_activity%'
+                        ORDER BY duration DESC
+                        LIMIT 20
+                        """,
+                        f"{self.db_watchdog_threshold} seconds",
+                    )
+                    for r in rows:
+                        pid = r['pid']
+                        dur = r['duration']
+                        app = r['application_name']
+                        logger.warning(f"⚠️ Cancelling long-running query pid={pid}, app='{app}', duration={dur}")
+                        try:
+                            await conn.execute("SELECT pg_cancel_backend($1)", pid)
+                        except Exception as ce:
+                            logger.error(f"❌ Failed to cancel pid={pid}: {ce}")
+                finally:
+                    await conn.close()
+            except Exception as e:
+                logger.error(f"DB watchdog error: {e}")
+            await asyncio.sleep(self.db_watchdog_interval)
     
     async def wait_for_shutdown(self):
         """Ожидание сигнала на завершение"""

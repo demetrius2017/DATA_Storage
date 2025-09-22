@@ -116,7 +116,8 @@ class DatabaseManager:
             ssl=ssl_ctx,
             min_size=2,
             max_size=self.pool_size,
-            command_timeout=30
+            command_timeout=30,
+            init=self._init_connection
         )
         
         # Заполнение кэша символов
@@ -128,6 +129,17 @@ class DatabaseManager:
         async with self.pool.acquire() as conn:
             rows = await conn.fetch("SELECT id, symbol FROM marketdata.symbols WHERE is_active = true")
             self.symbol_cache = {row['symbol']: row['id'] for row in rows}
+
+    async def _init_connection(self, conn: asyncpg.Connection):
+        """Инициализация параметров сессии Postgres для инжестора."""
+        try:
+            # Жестко ограничим время выполнения и укажем имя приложения
+            await conn.execute("SET LOCAL statement_timeout = '15s';")
+            await conn.execute("SET LOCAL lock_timeout = '5s';")
+            await conn.execute("SET LOCAL idle_in_transaction_session_timeout = '10s';")
+            await conn.execute("SET LOCAL application_name = 'collector_ingestor';")
+        except Exception:
+            pass
 
     async def get_or_create_symbol_id(self, symbol: str) -> int:
         """Получение или создание ID символа (живая БД)."""

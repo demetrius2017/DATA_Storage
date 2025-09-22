@@ -81,6 +81,11 @@ class SystemMetrics:
     # Errors
     total_errors_last_hour: int
     websocket_disconnects: int
+
+    # DB watchdog/health
+    db_watchdog_enabled: bool = False
+    db_watchdog_threshold_sec: int = 120
+    db_long_running_queries: int = 0
     
     def to_dict(self) -> Dict[str, Any]:
         result = asdict(self)
@@ -213,6 +218,24 @@ class HealthChecker:
                 FROM pg_stat_activity
                 WHERE datname = current_database()
             """)
+
+            # Долгие запросы в БД (для watchdog/health)
+            try:
+                threshold_sec = int(os.getenv('DB_WATCHDOG_THRESHOLD', '120'))
+            except Exception:
+                threshold_sec = 120
+            long_running_count = await conn.fetchval(
+                """
+                SELECT COUNT(*)
+                FROM pg_stat_activity
+                WHERE datname = current_database()
+                  AND state = 'active'
+                  AND now() - query_start > $1::interval
+                  AND application_name NOT IN ('collector_monitor')
+                  AND query NOT ILIKE '%pg_stat_activity%'
+                """,
+                f"{threshold_sec} seconds",
+            )
             
         # Расчет метрик  
         total_updates = (row['total_bt_updates'] or 0) + (row['total_tr_updates'] or 0)
@@ -230,7 +253,10 @@ class HealthChecker:
             db_connections_total=db_stats_row['total_connections'],
             memory_usage_mb=0.0,  # TODO: добавить memory monitoring
             total_errors_last_hour=0,  # TODO: добавить error tracking
-            websocket_disconnects=0
+            websocket_disconnects=0,
+            db_watchdog_enabled=os.getenv('ENABLE_DB_WATCHDOG', 'true').strip().lower() in ('1','true','yes'),
+            db_watchdog_threshold_sec=threshold_sec,
+            db_long_running_queries=int(long_running_count or 0),
         )
 
 class MonitoringDashboard:
@@ -330,6 +356,8 @@ class MonitoringDashboard:
                         document.getElementById('database').innerHTML = `
                             <div>Active Connections: <span class="number">${systemData.db_connections_active}</span>/${systemData.db_connections_total}</div>
                             <div>Memory: <span class="number">${systemData.memory_usage_mb.toFixed(0)}MB</span></div>
+                            <div>DB Watchdog: <span class="number">${systemData.db_watchdog_enabled ? 'on' : 'off'}</span> (thr=${systemData.db_watchdog_threshold_sec}s)</div>
+                            <div>Long-running queries: <span class="number">${systemData.db_long_running_queries}</span></div>
                         `;
                         
                         // Symbols table
@@ -458,14 +486,40 @@ class MonitoringDashboard:
                 if result == 1:
                     # Добавляем сводку по эндпоинтам для быстрой проверки окружения
                     recent = await self._recent_ingestion_summary(conn)
+                    # Интеграция watchdog в health: считаем долгие запросы
+                    try:
+                        threshold_sec = int(os.getenv('DB_WATCHDOG_THRESHOLD', '120'))
+                    except Exception:
+                        threshold_sec = 120
+                    long_running = await conn.fetchval(
+                        """
+                        SELECT COUNT(*)
+                        FROM pg_stat_activity
+                        WHERE datname = current_database()
+                          AND state = 'active'
+                          AND now() - query_start > $1::interval
+                          AND application_name NOT IN ('collector_monitor')
+                          AND query NOT ILIKE '%pg_stat_activity%'
+                        """,
+                        f"{threshold_sec} seconds",
+                    )
+                    degrade_on_long = os.getenv('HEALTH_DEGRADED_ON_LONG_QUERIES', 'true').strip().lower() in ('1','true','yes')
+                    status = 'healthy'
+                    if degrade_on_long and (long_running or 0) > 0:
+                        status = 'degraded'
                     return web.json_response({
-                        'status': 'healthy', 
+                        'status': status, 
                         'database': 'ok',
                         'binance': {
                             'base_url': os.getenv('BINANCE_BASE_URL', 'https://fapi.binance.com'),
                             'ws_url': os.getenv('BINANCE_WS_URL', 'wss://fstream.binance.com/ws/')
                         },
-                        'recent': recent
+                        'recent': recent,
+                        'watchdog': {
+                            'enabled': os.getenv('ENABLE_DB_WATCHDOG', 'true').strip().lower() in ('1','true','yes'),
+                            'threshold_sec': threshold_sec,
+                            'long_running_queries': int(long_running or 0)
+                        }
                     })
         except Exception as e:
             return web.json_response(
@@ -562,8 +616,19 @@ class MonitoringSystem:
             min_size=2,
             max_size=5,
             command_timeout=30,
-            ssl=ssl_ctx
+            ssl=ssl_ctx,
+            init=self._init_connection
         )
+        
+    async def _init_connection(self, conn: asyncpg.Connection):
+        """Инициализация параметров сессии Postgres для мониторинга."""
+        try:
+            # Ограничиваем время запроса, чтобы не было вечных зависаний
+            await conn.execute("SET LOCAL statement_timeout = '5s';")
+            await conn.execute("SET LOCAL idle_in_transaction_session_timeout = '10s';")
+            await conn.execute("SET LOCAL application_name = 'collector_monitor';")
+        except Exception:
+            pass
         
         # Запуск dashboard
         self.dashboard = MonitoringDashboard(self.db_pool, self.dashboard_port)
