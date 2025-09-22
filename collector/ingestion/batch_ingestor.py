@@ -129,6 +129,137 @@ class DatabaseManager:
             rows = await conn.fetch("SELECT id, symbol FROM marketdata.symbols WHERE is_active = true")
             self.symbol_cache = {row['symbol']: row['id'] for row in rows}
 
+    async def get_or_create_symbol_id(self, symbol: str) -> int:
+        """Получение или создание ID символа (живая БД)."""
+        if symbol in self.symbol_cache:
+            return self.symbol_cache[symbol]
+
+        if self.pool is None:
+            raise RuntimeError("Database connection pool is not initialized (pool=None)")
+
+        async with self.pool.acquire() as conn:
+            try:
+                symbol_id = await conn.fetchval(
+                    """
+                    INSERT INTO marketdata.symbols (exchange, symbol, base_asset, quote_asset)
+                    VALUES ('binance-futures', $1, split_part($1, 'USDT', 1), 'USDT')
+                    ON CONFLICT (exchange, symbol) 
+                    DO UPDATE SET updated_at = NOW()
+                    RETURNING id
+                    """,
+                    symbol,
+                )
+
+                if symbol_id is None:
+                    # Символ уже существует, получаем его ID
+                    symbol_id = await conn.fetchval(
+                        "SELECT id FROM marketdata.symbols WHERE exchange = 'binance-futures' AND symbol = $1",
+                        symbol,
+                    )
+
+                self.symbol_cache[symbol] = symbol_id
+                return symbol_id
+            except Exception as e:
+                logger.error(f"Ошибка при создании символа {symbol}: {e}")
+                raise
+
+    async def batch_insert_book_ticker(self, records: List[Dict[str, Any]]):
+        """Батчевая вставка book_ticker записей"""
+        if not records:
+            return
+        if self.pool is None:
+            raise RuntimeError("Database connection pool is not initialized (pool=None)")
+
+        async with self.pool.acquire() as conn:
+            await conn.executemany(
+                """
+                INSERT INTO marketdata.book_ticker 
+                (ts_exchange, ts_ingest, symbol_id, update_id, best_bid, best_ask, bid_qty, ask_qty, spread, mid)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                ON CONFLICT DO NOTHING
+                """,
+                [
+                    (
+                        datetime.fromtimestamp(r['ts_exchange'] / 1000, tz=timezone.utc),
+                        datetime.fromtimestamp(r['ts_ingest'] / 1000, tz=timezone.utc), 
+                        r['symbol_id'],
+                        r.get('update_id'),
+                        r['best_bid'],
+                        r['best_ask'],
+                        r['bid_qty'],
+                        r['ask_qty'],
+                        float(r['best_ask']) - float(r['best_bid']),
+                        (float(r['best_ask']) + float(r['best_bid'])) / 2.0,
+                    )
+                    for r in records
+                ],
+            )
+
+    async def batch_insert_trades(self, records: List[Dict[str, Any]]):
+        """Батчевая вставка trades записей"""
+        if not records:
+            return
+        if self.pool is None:
+            raise RuntimeError("Database connection pool is not initialized (pool=None)")
+
+        async with self.pool.acquire() as conn:
+            await conn.executemany(
+                """
+                INSERT INTO marketdata.trades
+                (ts_exchange, ts_ingest, symbol_id, agg_trade_id, price, qty, is_buyer_maker)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ON CONFLICT DO NOTHING
+                """,
+                [
+                    (
+                        datetime.fromtimestamp(r['ts_exchange'] / 1000, tz=timezone.utc),
+                        datetime.fromtimestamp(r['ts_ingest'] / 1000, tz=timezone.utc),
+                        r['symbol_id'],
+                        r['agg_trade_id'],
+                        r['price'],
+                        r['qty'],
+                        r['is_buyer_maker'],
+                    )
+                    for r in records
+                ],
+            )
+
+    async def batch_insert_depth_events(self, records: List[Dict[str, Any]]):
+        """Батчевая вставка depth_events записей"""
+        if not records:
+            return
+        if self.pool is None:
+            raise RuntimeError("Database connection pool is not initialized (pool=None)")
+
+        async with self.pool.acquire() as conn:
+            await conn.executemany(
+                """
+                INSERT INTO marketdata.depth_events
+                (ts_exchange, ts_ingest, symbol_id, first_update_id, final_update_id, 
+                 prev_final_update_id, bids, asks)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT DO NOTHING
+                """,
+                [
+                    (
+                        datetime.fromtimestamp(r['ts_exchange'] / 1000, tz=timezone.utc),
+                        datetime.fromtimestamp(r['ts_ingest'] / 1000, tz=timezone.utc),
+                        r['symbol_id'],
+                        r['first_update_id'],
+                        r['final_update_id'],
+                        r.get('prev_final_update_id'),
+                        json.dumps(r['bids']),
+                        json.dumps(r['asks']),
+                    )
+                    for r in records
+                ],
+            )
+
+    async def close(self):
+        """Закрытие пула соединений"""
+        if self.pool:
+            await self.pool.close()
+
 
 class NullDatabaseManager(DatabaseManager):
     """Null-обработчик БД для локального dry-run: эмулирует интерфейс без подключений."""
@@ -147,6 +278,7 @@ class NullDatabaseManager(DatabaseManager):
         return
 
     async def get_or_create_symbol_id(self, symbol: str) -> int:
+        """Эфемерная выдача ID без обращений к БД."""
         sid = self.symbol_cache.get(symbol)
         if sid is None:
             sid = self._id_seq
@@ -171,45 +303,6 @@ class NullDatabaseManager(DatabaseManager):
 
     async def close(self):
         logger.info("DRY-RUN: закрывать нечего")
-    
-    async def get_or_create_symbol_id(self, symbol: str) -> int:
-        """Получение или создание ID символа"""
-        if symbol in self.symbol_cache:
-            return self.symbol_cache[symbol]
-
-        # Защита от неинициализированного пула в локальном DRY-RUN
-        if self.pool is None:
-            if os.getenv('DRY_RUN', 'false').lower() in ('1', 'true', 'yes'):
-                # Эфемерная выдача ID без БД
-                new_id = max(self.symbol_cache.values(), default=0) + 1
-                self.symbol_cache[symbol] = new_id
-                return new_id
-            raise RuntimeError("Database connection pool is not initialized (pool=None). Set DRY_RUN=true for local run or provide a valid DATABASE_URL.")
-
-        async with self.pool.acquire() as conn:
-            # Попытка вставки нового символа
-            try:
-                symbol_id = await conn.fetchval("""
-                    INSERT INTO marketdata.symbols (exchange, symbol, base_asset, quote_asset)
-                    VALUES ('binance-futures', $1, split_part($1, 'USDT', 1), 'USDT')
-                    ON CONFLICT (exchange, symbol) 
-                    DO UPDATE SET updated_at = NOW()
-                    RETURNING id
-                """, symbol)
-                
-                if symbol_id is None:
-                    # Символ уже существует, получаем его ID
-                    symbol_id = await conn.fetchval(
-                        "SELECT id FROM marketdata.symbols WHERE exchange = 'binance-futures' AND symbol = $1",
-                        symbol
-                    )
-                
-                self.symbol_cache[symbol] = symbol_id
-                return symbol_id
-                
-            except Exception as e:
-                logger.error(f"Ошибка при создании символа {symbol}: {e}")
-                raise
     
     async def batch_insert_book_ticker(self, records: List[Dict[str, Any]]):
         """Батчевая вставка book_ticker записей"""
