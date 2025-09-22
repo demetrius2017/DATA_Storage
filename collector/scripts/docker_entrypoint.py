@@ -11,6 +11,7 @@ import logging
 import signal
 import time
 from pathlib import Path
+from datetime import timedelta
 import aiohttp
 from typing import cast
 
@@ -301,7 +302,7 @@ class ProductionCollector:
                         ORDER BY duration DESC
                         LIMIT 20
                         """,
-                        f"{self.db_watchdog_threshold} seconds",
+                        timedelta(seconds=self.db_watchdog_threshold),
                     )
                     for r in rows:
                         pid = r['pid']

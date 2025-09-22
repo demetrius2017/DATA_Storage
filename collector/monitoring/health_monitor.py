@@ -224,6 +224,7 @@ class HealthChecker:
                 threshold_sec = int(os.getenv('DB_WATCHDOG_THRESHOLD', '120'))
             except Exception:
                 threshold_sec = 120
+            # Используем timedelta для корректной передачи interval в asyncpg
             long_running_count = await conn.fetchval(
                 """
                 SELECT COUNT(*)
@@ -234,7 +235,7 @@ class HealthChecker:
                   AND application_name NOT IN ('collector_monitor')
                   AND query NOT ILIKE '%pg_stat_activity%'
                 """,
-                f"{threshold_sec} seconds",
+                timedelta(seconds=threshold_sec),
             )
             
         # Расчет метрик  
@@ -491,6 +492,7 @@ class MonitoringDashboard:
                         threshold_sec = int(os.getenv('DB_WATCHDOG_THRESHOLD', '120'))
                     except Exception:
                         threshold_sec = 120
+                    # Передаём interval как timedelta, чтобы избежать ошибок конверсии
                     long_running = await conn.fetchval(
                         """
                         SELECT COUNT(*)
@@ -501,7 +503,7 @@ class MonitoringDashboard:
                           AND application_name NOT IN ('collector_monitor')
                           AND query NOT ILIKE '%pg_stat_activity%'
                         """,
-                        f"{threshold_sec} seconds",
+                        timedelta(seconds=threshold_sec),
                     )
                     degrade_on_long = os.getenv('HEALTH_DEGRADED_ON_LONG_QUERIES', 'true').strip().lower() in ('1','true','yes')
                     status = 'healthy'
@@ -619,6 +621,12 @@ class MonitoringSystem:
             ssl=ssl_ctx,
             init=self._init_connection
         )
+
+        # Запуск dashboard один раз после инициализации пула
+        self.dashboard = MonitoringDashboard(self.db_pool, self.dashboard_port)
+        await self.dashboard.start()
+        self.running = True
+        logger.info(f"Мониторинг запущен на порту {self.dashboard_port}")
         
     async def _init_connection(self, conn: asyncpg.Connection):
         """Инициализация параметров сессии Postgres для мониторинга."""
@@ -630,12 +638,7 @@ class MonitoringSystem:
         except Exception:
             pass
         
-        # Запуск dashboard
-        self.dashboard = MonitoringDashboard(self.db_pool, self.dashboard_port)
-        await self.dashboard.start()
-        
-        self.running = True
-        logger.info(f"Мониторинг запущен на порту {self.dashboard_port}")
+    # В init-сессии только настройки параметров; dashboard запускается в start()
         
     async def stop(self):
         """Остановка системы мониторинга"""
