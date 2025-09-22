@@ -4,7 +4,11 @@ on:
   push:
     branches: [master, main]
     paths:
+      # Включаем общий код коллектора, но исключаем мониторинг и документацию
       - 'collector/**'
+      - '!collector/monitoring/**'
+      - '!collector/docs/**'
+      # Инфраструктура
       - 'Dockerfile'
       - 'docker-compose.production.yml'
       - 'requirements.txt'
