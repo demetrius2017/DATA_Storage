@@ -65,17 +65,10 @@ jobs:
                   echo "DATABASE_URL not found in container env"
                   exit 1
                 fi
-                docker run --rm --network host -e DATABASE_URL="$DBURL" -e SYMS="$SYMS_CSV" postgres:15-alpine /bin/sh -lc '
-                  set -e
-                  SQL="WITH s AS (SELECT unnest(string_to_array(\'$SYMS\', \\',\\')) AS symbol) \
-                       SELECT s.symbol, COALESCE(COUNT(bt.*) FILTER (WHERE bt.ts_exchange >= NOW() - INTERVAL \'5 minutes\'),0) AS bt_5m \
-                       FROM s \
-                       LEFT JOIN marketdata.symbols ms ON ms.symbol = s.symbol \
-                       LEFT JOIN marketdata.book_ticker bt ON bt.symbol_id = ms.id \
-                       GROUP BY s.symbol ORDER BY s.symbol;"
-                  psql "$DATABASE_URL" -Atc "$SQL" > /tmp/psql_probe.txt
-                  cat /tmp/psql_probe.txt
-                ' > /tmp/probe_psql.txt 2>/tmp/probe_psql.err || true
+                docker run --rm --network host -e DATABASE_URL="$DBURL" -e SYMS="$SYMS_CSV" postgres:15-alpine \
+                  /bin/sh -lc "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -v syms=\"$SYMS\" -Atc \"WITH s AS (SELECT unnest(string_to_array(:'syms', ',')) AS symbol) SELECT s.symbol, COALESCE(COUNT(bt.*) FILTER (WHERE bt.ts_exchange >= NOW() - INTERVAL '5 minutes'), 0) AS bt_5m FROM s LEFT JOIN marketdata.symbols ms ON ms.symbol = s.symbol LEFT JOIN marketdata.book_ticker bt ON bt.symbol_id = ms.id GROUP BY s.symbol ORDER BY s.symbol;\"" \
+                  > /tmp/probe_psql.txt 2>/tmp/probe_psql.err || true
+                cat /tmp/probe_psql.txt || true
                 if [ ! -s /tmp/probe_psql.txt ]; then
                   echo "psql fallback produced no output"
                   cat /tmp/probe_psql.err || true
