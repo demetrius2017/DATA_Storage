@@ -514,21 +514,25 @@ class MultiStreamCollector:
             self.streams.append(stream)
             logger.info(f"🧊 depth поток (@100ms): {len(top_symbols)} топ-символов")
 
-        # markPrice@1s потоки
-        for i, symbols in enumerate(symbol_chunks):
-            streams = [f"{s.lower()}@markPrice@1s" for s in symbols]
-            url = base_url + "/".join(streams)
-            stream = WebSocketStream(url, symbols, self.symbol_manager, self.batch_processor)
-            self.streams.append(stream)
-            logger.info(f"🏷️ markPrice поток {i+1}: {len(symbols)} символов")
+        # markPrice@1s потоки (включаем по флагу окружения)
+        enable_mark = (os.environ.get('ENABLE_MARK_PRICE', 'true').lower() == 'true')
+        if enable_mark:
+            for i, symbols in enumerate(symbol_chunks):
+                streams = [f"{s.lower()}@markPrice@1s" for s in symbols]
+                url = base_url + "/".join(streams)
+                stream = WebSocketStream(url, symbols, self.symbol_manager, self.batch_processor)
+                self.streams.append(stream)
+                logger.info(f"🏷️ markPrice поток {i+1}: {len(symbols)} символов")
 
-        # forceOrder потоки
-        for i, symbols in enumerate(symbol_chunks):
-            streams = [f"{s.lower()}@forceOrder" for s in symbols]
-            url = base_url + "/".join(streams)
-            stream = WebSocketStream(url, symbols, self.symbol_manager, self.batch_processor)
-            self.streams.append(stream)
-            logger.info(f"⚠️ forceOrder поток {i+1}: {len(symbols)} символов")
+        # forceOrder потоки (включаем по флагу окружения)
+        enable_force = (os.environ.get('ENABLE_FORCE_ORDER', 'true').lower() == 'true')
+        if enable_force:
+            for i, symbols in enumerate(symbol_chunks):
+                streams = [f"{s.lower()}@forceOrder" for s in symbols]
+                url = base_url + "/".join(streams)
+                stream = WebSocketStream(url, symbols, self.symbol_manager, self.batch_processor)
+                self.streams.append(stream)
+                logger.info(f"⚠️ forceOrder поток {i+1}: {len(symbols)} символов")
         
         logger.info(f"🎯 Создано {len(self.streams)} WebSocket потоков")
     
