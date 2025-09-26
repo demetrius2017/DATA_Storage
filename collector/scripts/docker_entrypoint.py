@@ -181,7 +181,13 @@ class ProductionCollector:
             return list(candidates)
     
     async def start_batch_ingestores(self):
-        """Запуск batch инжесторов: основной (bt/tr) + опционально depth@100ms для топ-символов"""
+        """Запуск batch инжесторов: основной (bt/tr) + depth@100ms для всех активных символов по умолчанию.
+
+        Политика:
+        - Если ENABLE_DEPTH=false → depth не запускаем.
+        - Если DEPTH_TOP_SYMBOLS непустой → используем его как явный override (фильтруем по active_symbols), иначе берём все active_symbols.
+        - Это убирает скрытое ограничение «только топ-10»: теперь по умолчанию собирается FULL DATA по всем включённым символам.
+        """
         logger.info("🚀 Starting PostgreSQL batch ingestors...")
         logger.info(f"🌐 Binance REST: {self.binance_base_url}")
         logger.info(f"🌐 Binance WS:   {self.binance_ws_url}")
@@ -201,31 +207,36 @@ class ProductionCollector:
         asyncio.create_task(main_ingestor.start())
         logger.info(f"✅ Main ingestor (bt/tr) started with {len(symbols_main)} symbols")
 
-    # 2) Опциональный depth-инжестор: diff depth@100ms только для ограниченного набора символов
+    # 2) Depth-инжестор: diff depth@100ms для всех активных символов по умолчанию (FULL DATA)
         if self.enable_depth:
-            # Приоритет: DEPTH_TOP_SYMBOLS из ENV; иначе возьмем первые 10 активных символов
-            depth_symbols = []
+            # Если DEPTH_TOP_SYMBOLS явно задан — используем его как override
+            depth_symbols: list[str] = []
             if self.depth_top_symbols_env.strip():
-                depth_symbols = [s.strip().upper() for s in self.depth_top_symbols_env.split(',') if s.strip()]
-                # Оставляем только валидные futures символы
+                requested = [s.strip().upper() for s in self.depth_top_symbols_env.split(',') if s.strip()]
+                # Оставляем только валидные активные символы
                 valid_set = set(self.active_symbols) if self.active_symbols else set(SYMBOLS_200)
-                depth_symbols = [s for s in depth_symbols if s in valid_set]
+                depth_symbols = [s for s in requested if s in valid_set]
+                if not depth_symbols and requested:
+                    logger.warning("DEPTH_TOP_SYMBOLS задан, но ни один из символов не активен — используем все active_symbols")
+
             if not depth_symbols:
-                src = self.active_symbols if self.active_symbols else SYMBOLS_200
-                depth_symbols = src[:10]
+                # FULL DATA по всем активным символам
+                depth_symbols = list(self.active_symbols) if self.active_symbols else list(SYMBOLS_200)
 
             if depth_symbols:
                 db_url: str = str(self.database_url)
+                # Шардирование: 1 шард на каждые ~20 символов, минимум 1, максимум 5
+                shards_for_depth = max(1, min(5, (len(depth_symbols) + 19) // 20))
                 depth_ingestor = BatchIngestor(
                     db_connection_string=db_url,
                     symbols=depth_symbols,
                     channels=['depth@100ms'],
-                    shards_count=max(1, min(2, len(depth_symbols)//5)),  # 1-2 шарда достаточно
+                    shards_count=shards_for_depth,
                     ws_base_url=self.binance_ws_url,
                 )
                 self.ingestors.append(depth_ingestor)
                 asyncio.create_task(depth_ingestor.start())
-                logger.info(f"🧊 Depth ingestor started for {len(depth_symbols)} symbols: {depth_symbols}")
+                logger.info(f"🧊 Depth ingestor started for {len(depth_symbols)} symbols (shards={shards_for_depth})")
             else:
                 logger.warning("ENABLE_DEPTH=true, но список depth символов пуст — depth не запущен")
     
