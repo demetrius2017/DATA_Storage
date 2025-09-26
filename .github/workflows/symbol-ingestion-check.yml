@@ -60,13 +60,17 @@ jobs:
               set -e
               if [ $STATUS -ne 0 ]; then
                 echo "Python not available or probe failed, falling back to psql"
-                DBURL=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$CID" | awk -F= '/^DATABASE_URL=/{print $2; exit}')
+                DBURL=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$CID" | sed -n 's/^DATABASE_URL=//p' | head -n1)
                 if [ -z "$DBURL" ]; then
                   echo "DATABASE_URL not found in container env"
                   exit 1
                 fi
-                docker run --rm --network host -e DATABASE_URL="$DBURL" -e SYMS="$SYMS_CSV" postgres:15-alpine \
-                  /bin/sh -lc "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -v syms=\"$SYMS\" -Atc \"WITH s AS (SELECT unnest(string_to_array(:'syms', ',')) AS symbol) SELECT s.symbol, COALESCE(COUNT(bt.*) FILTER (WHERE bt.ts_exchange >= NOW() - INTERVAL '5 minutes'), 0) AS bt_5m FROM s LEFT JOIN marketdata.symbols ms ON ms.symbol = s.symbol LEFT JOIN marketdata.book_ticker bt ON bt.symbol_id = ms.id GROUP BY s.symbol ORDER BY s.symbol;\"" \
+                # Parse host and port from DATABASE_URL to avoid unix socket fallback
+                DBHOST=$(echo "$DBURL" | sed -E 's|^.+://([^:/@]+)(:([0-9]+))?.*$|\1|')
+                DBPORT=$(echo "$DBURL" | sed -nE 's|^.+://[^:/@]+:([0-9]+).*$|\1|p')
+                if [ -z "$DBPORT" ]; then DBPORT=5432; fi
+                docker run --rm --network host -e DATABASE_URL="$DBURL" -e SYMS="$SYMS_CSV" -e PGHOST="$DBHOST" -e PGPORT="$DBPORT" postgres:15-alpine \
+                  /bin/sh -lc "psql \"$DATABASE_URL\" -h \"$PGHOST\" -p \"$PGPORT\" -v ON_ERROR_STOP=1 -v syms=\"$SYMS\" -Atc \"WITH s AS (SELECT unnest(string_to_array(:'syms', ',')) AS symbol) SELECT s.symbol, COALESCE(COUNT(bt.*) FILTER (WHERE bt.ts_exchange >= NOW() - INTERVAL '5 minutes'), 0) AS bt_5m FROM s LEFT JOIN marketdata.symbols ms ON ms.symbol = s.symbol LEFT JOIN marketdata.book_ticker bt ON bt.symbol_id = ms.id GROUP BY s.symbol ORDER BY s.symbol;\"" \
                   > /tmp/probe_psql.txt 2>/tmp/probe_psql.err || true
                 cat /tmp/probe_psql.txt || true
                 if [ ! -s /tmp/probe_psql.txt ]; then
