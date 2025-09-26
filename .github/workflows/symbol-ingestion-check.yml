@@ -46,20 +46,55 @@ jobs:
             done
             if [ -n "$(echo $MISSING | tr -d ' ')" ]; then
               echo "-- Fallback: DB-based verification via container --"
-              CID=$(docker ps --format '{{.ID}} {{.Names}} {{.Image}}' | grep -Ei 'collector|orderbook' | head -n1 | awk '{print $1}')
+              # Find a container that has DATABASE_URL in env (more reliable than name matching)
+              CID=$(for id in $(docker ps -q); do docker inspect -f '{{.Id}} {{range .Config.Env}}{{println .}}{{end}}' "$id" | grep -q '^DATABASE_URL=' && echo "$id" && break; done)
               if [ -z "$CID" ]; then
-                echo "No collector container found for DB probe"
+                echo "No container with DATABASE_URL env found"
                 exit 1
               fi
               SYMS_CSV=$(printf "%s," "${SYMS_ARR[@]}" | sed 's/,$//')
+              # Try in-container python tool first (if python present)
               set +e
-              docker exec "$CID" /bin/sh -lc "python3 -m collector.tools.symbol_probe --symbols '$SYMS_CSV' --minutes 5 || python -m collector.tools.symbol_probe --symbols '$SYMS_CSV' --minutes 5" > /tmp/probe.json
+              docker exec "$CID" /bin/sh -lc "python3 -m collector.tools.symbol_probe --symbols '$SYMS_CSV' --minutes 5 || python -m collector.tools.symbol_probe --symbols '$SYMS_CSV' --minutes 5" > /tmp/probe.json 2>/tmp/probe.err
               STATUS=$?
               set -e
-              cat /tmp/probe.json || true
               if [ $STATUS -ne 0 ]; then
-                echo "DB fallback indicates missing/no-updates in last 5m"
-                exit 1
+                echo "Python not available or probe failed, falling back to psql"
+                DBURL=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$CID" | awk -F= '/^DATABASE_URL=/{print $2; exit}')
+                if [ -z "$DBURL" ]; then
+                  echo "DATABASE_URL not found in container env"
+                  exit 1
+                fi
+                docker run --rm --network host -e DATABASE_URL="$DBURL" -e SYMS="$SYMS_CSV" postgres:15-alpine /bin/sh -lc '
+                  set -e
+                  SQL="WITH s AS (SELECT unnest(string_to_array(\'$SYMS\', \\',\\')) AS symbol) \
+                       SELECT s.symbol, COALESCE(COUNT(bt.*) FILTER (WHERE bt.ts_exchange >= NOW() - INTERVAL \'5 minutes\'),0) AS bt_5m \
+                       FROM s \
+                       LEFT JOIN marketdata.symbols ms ON ms.symbol = s.symbol \
+                       LEFT JOIN marketdata.book_ticker bt ON bt.symbol_id = ms.id \
+                       GROUP BY s.symbol ORDER BY s.symbol;"
+                  psql "$DATABASE_URL" -Atc "$SQL" > /tmp/psql_probe.txt
+                  cat /tmp/psql_probe.txt
+                ' > /tmp/probe_psql.txt 2>/tmp/probe_psql.err || true
+                if [ ! -s /tmp/probe_psql.txt ]; then
+                  echo "psql fallback produced no output"
+                  cat /tmp/probe_psql.err || true
+                  exit 1
+                fi
+                FAIL=0
+                while IFS='|' read -r SY C; do
+                  SY=$(echo "$SY" | tr -d '[:space:]')
+                  C=${C:-0}
+                  echo "PSQL: $SY bt_5m=$C"
+                  if [ -z "$SY" ]; then continue; fi
+                  if [ "$C" -eq 0 ]; then FAIL=1; fi
+                done < /tmp/probe_psql.txt
+                if [ $FAIL -ne 0 ]; then
+                  echo "DB fallback indicates missing/no-updates in last 5m"
+                  exit 1
+                fi
+              else
+                cat /tmp/probe.json || true
               fi
             fi
             echo "All symbols verified (API and/or DB fallback)."
