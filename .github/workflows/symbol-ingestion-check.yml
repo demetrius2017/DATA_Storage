@@ -53,7 +53,7 @@ jobs:
               fi
               SYMS_CSV=$(printf "%s," "${SYMS_ARR[@]}" | sed 's/,$//')
               set +e
-              docker exec "$CID" python -m collector.tools.symbol_probe --symbols "$SYMS_CSV" --minutes 5 > /tmp/probe.json
+              docker exec "$CID" /bin/sh -lc "python3 -m collector.tools.symbol_probe --symbols '$SYMS_CSV' --minutes 5 || python -m collector.tools.symbol_probe --symbols '$SYMS_CSV' --minutes 5" > /tmp/probe.json
               STATUS=$?
               set -e
               cat /tmp/probe.json || true
