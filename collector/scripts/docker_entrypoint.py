@@ -209,19 +209,8 @@ class ProductionCollector:
 
     # 2) Depth-инжестор: diff depth@100ms для всех активных символов по умолчанию (FULL DATA)
         if self.enable_depth:
-            # Если DEPTH_TOP_SYMBOLS явно задан — используем его как override
-            depth_symbols: list[str] = []
-            if self.depth_top_symbols_env.strip():
-                requested = [s.strip().upper() for s in self.depth_top_symbols_env.split(',') if s.strip()]
-                # Оставляем только валидные активные символы
-                valid_set = set(self.active_symbols) if self.active_symbols else set(SYMBOLS_200)
-                depth_symbols = [s for s in requested if s in valid_set]
-                if not depth_symbols and requested:
-                    logger.warning("DEPTH_TOP_SYMBOLS задан, но ни один из символов не активен — используем все active_symbols")
-
-            if not depth_symbols:
-                # FULL DATA по всем активным символам
-                depth_symbols = list(self.active_symbols) if self.active_symbols else list(SYMBOLS_200)
+            # FULL DATA по всем активным символам: игнорируем DEPTH_TOP_SYMBOLS, чтобы не было скрытых ограничений
+            depth_symbols = list(self.active_symbols) if self.active_symbols else list(SYMBOLS_200)
 
             if depth_symbols:
                 db_url: str = str(self.database_url)
@@ -236,7 +225,7 @@ class ProductionCollector:
                 )
                 self.ingestors.append(depth_ingestor)
                 asyncio.create_task(depth_ingestor.start())
-                logger.info(f"🧊 Depth ingestor started for {len(depth_symbols)} symbols (shards={shards_for_depth})")
+                logger.info(f"🧊 Depth ingestor started for {len(depth_symbols)} symbols (FULL DATA, shards={shards_for_depth})")
             else:
                 logger.warning("ENABLE_DEPTH=true, но список depth символов пуст — depth не запущен")
     
