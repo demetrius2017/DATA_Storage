@@ -9,7 +9,8 @@
 # 200 уникальных символов в порядке убывания ликвидности
 SYMBOLS_200 = [
     # Tier 1: Средняя ликвидность (хорошие для анализа MM)
-    'SOLUSDT', 'ADAUSDT', 'DOTUSDT', 'AVAXUSDT', 'MATICUSDT', 'LINKUSDT', 'UNIUSDT', 'LTCUSDT', 'BCHUSDT', 'XLMUSDT',
+    # Переупорядочено по запросу: оставляем SOLUSDT и добавляем FIOUSDT, MLNUSDT, GHSTUSDT в топ для запуска
+    'SOLUSDT', 'FIOUSDT', 'MLNUSDT', 'GHSTUSDT', 'MATICUSDT', 'LINKUSDT', 'UNIUSDT', 'LTCUSDT', 'BCHUSDT', 'XLMUSDT',
     
     # Tier 2: Умеренная ликвидность 
     'ATOMUSDT', 'VETUSDT', 'FILUSDT', 'TRXUSDT', 'ETCUSDT', 'ICPUSDT', 'NEARUSDT', 'FTMUSDT', 'SANDUSDT', 'MANAUSDT',
