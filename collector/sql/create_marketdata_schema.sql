@@ -102,6 +102,49 @@ CREATE INDEX idx_trades_time ON marketdata.trades (symbol_id, ts_exchange);
 CREATE INDEX idx_trades_side ON marketdata.trades (symbol_id, is_buyer_maker, ts_exchange);
 
 -- ===============================================
+-- 3.1. MARK PRICE (1s updates)
+-- ===============================================
+
+CREATE TABLE IF NOT EXISTS marketdata.mark_price (
+    ts_exchange timestamptz NOT NULL,
+    ts_ingest timestamptz NOT NULL DEFAULT now(),
+    symbol_id bigint NOT NULL REFERENCES marketdata.symbols(id),
+    event_type text,                      -- 'markPriceUpdate'
+    mark_price double precision,          -- p
+    index_price double precision,         -- i
+    est_settlement_price double precision,-- P (если присутствует)
+    funding_rate double precision,        -- r (если присутствует)
+    next_funding_time timestamptz,        -- T (мс → timestamptz)
+
+    PRIMARY KEY (symbol_id, ts_exchange)
+);
+
+COMMENT ON TABLE marketdata.mark_price IS 'Mark price / index price updates (@markPrice@1s)';
+
+CREATE INDEX IF NOT EXISTS idx_mark_price_time ON marketdata.mark_price (symbol_id, ts_exchange);
+
+-- ===============================================
+-- 3.2. FORCE ORDERS (Liquidations)
+-- ===============================================
+
+CREATE TABLE IF NOT EXISTS marketdata.force_orders (
+    ts_exchange timestamptz NOT NULL,
+    ts_ingest timestamptz NOT NULL DEFAULT now(),
+    symbol_id bigint NOT NULL REFERENCES marketdata.symbols(id),
+    side text,                            -- 'BUY' / 'SELL' (S)
+    price double precision,               -- p
+    qty double precision,                 -- q
+    raw jsonb NOT NULL,                   -- исходный объект события ('o')
+
+    -- В силу отсутствия строгого ID используем составной ключ для идемпотентности
+    PRIMARY KEY (symbol_id, ts_exchange, side, price, qty)
+);
+
+COMMENT ON TABLE marketdata.force_orders IS 'Liquidation orders stream (@forceOrder)';
+
+CREATE INDEX IF NOT EXISTS idx_force_orders_time ON marketdata.force_orders (symbol_id, ts_exchange);
+
+-- ===============================================
 -- 4. СОБЫТИЯ ГЛУБИНЫ РЫНКА (RAW)
 -- ===============================================
 
@@ -313,10 +356,20 @@ BEGIN
             partitioning_column => 'symbol_id',
             number_partitions => 16, 
             if_not_exists => TRUE);
+
+        PERFORM create_hypertable('marketdata.mark_price', 'ts_exchange',
+            partitioning_column => 'symbol_id',
+            number_partitions => 8,
+            if_not_exists => TRUE);
             
         PERFORM create_hypertable('marketdata.depth_events', 'ts_exchange',
             partitioning_column => 'symbol_id',
             number_partitions => 8,  -- Меньше партиций для depth (более объёмная таблица)
+            if_not_exists => TRUE);
+
+        PERFORM create_hypertable('marketdata.force_orders', 'ts_exchange',
+            partitioning_column => 'symbol_id',
+            number_partitions => 8,
             if_not_exists => TRUE);
             
         PERFORM create_hypertable('marketdata.orderbook_topN', 'ts_exchange',
@@ -354,7 +407,9 @@ BEGIN
         -- Retention: автоматическое удаление старых данных
         PERFORM add_retention_policy('marketdata.book_ticker', INTERVAL '30 days', if_not_exists => TRUE);
         PERFORM add_retention_policy('marketdata.trades', INTERVAL '30 days', if_not_exists => TRUE);
+    PERFORM add_retention_policy('marketdata.mark_price', INTERVAL '30 days', if_not_exists => TRUE);
         PERFORM add_retention_policy('marketdata.depth_events', INTERVAL '7 days', if_not_exists => TRUE);
+    PERFORM add_retention_policy('marketdata.force_orders', INTERVAL '30 days', if_not_exists => TRUE);
         PERFORM add_retention_policy('marketdata.orderbook_topN', INTERVAL '30 days', if_not_exists => TRUE);
         PERFORM add_retention_policy('marketdata.bt_1s', INTERVAL '180 days', if_not_exists => TRUE);
         PERFORM add_retention_policy('marketdata.trade_1s', INTERVAL '180 days', if_not_exists => TRUE);
@@ -362,7 +417,9 @@ BEGIN
         -- Compression: автоматическое сжатие старых партиций
         PERFORM add_compression_policy('marketdata.book_ticker', INTERVAL '7 days', if_not_exists => TRUE);
         PERFORM add_compression_policy('marketdata.trades', INTERVAL '7 days', if_not_exists => TRUE);
+    PERFORM add_compression_policy('marketdata.mark_price', INTERVAL '7 days', if_not_exists => TRUE);
         PERFORM add_compression_policy('marketdata.depth_events', INTERVAL '1 day', if_not_exists => TRUE);
+    PERFORM add_compression_policy('marketdata.force_orders', INTERVAL '7 days', if_not_exists => TRUE);
         PERFORM add_compression_policy('marketdata.orderbook_topN', INTERVAL '7 days', if_not_exists => TRUE);
         PERFORM add_compression_policy('marketdata.bt_1s', INTERVAL '30 days', if_not_exists => TRUE);
         PERFORM add_compression_policy('marketdata.trade_1s', INTERVAL '30 days', if_not_exists => TRUE);

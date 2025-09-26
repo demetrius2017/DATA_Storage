@@ -80,6 +80,24 @@ class DepthEvent(MarketDataEvent):
     bids: List[List[str]]  # [[price, qty], ...]
     asks: List[List[str]]  # [[price, qty], ...]
 
+@dataclass
+class MarkPriceEvent(MarketDataEvent):
+    """Событие mark price / index price"""
+    event_type: Optional[str]
+    mark_price: Optional[float]
+    index_price: Optional[float]
+    est_settlement_price: Optional[float]
+    funding_rate: Optional[float]
+    next_funding_time: Optional[datetime]
+
+@dataclass
+class ForceOrderEvent(MarketDataEvent):
+    """Событие ликвидации (forceOrder)"""
+    side: Optional[str]   # BUY/SELL
+    price: Optional[float]
+    qty: Optional[float]
+    raw: dict
+
 class SymbolManager:
     """Управление списком символов и их конфигурацией"""
     
@@ -117,12 +135,16 @@ class BatchProcessor:
         self.buffers = {
             'book_ticker': [],
             'trades': [],
-            'depth_events': []
+            'depth_events': [],
+            'mark_price': [],
+            'force_orders': []
         }
         self.stats = {
             'book_ticker': {'processed': 0, 'failed': 0},
             'trades': {'processed': 0, 'failed': 0},
-            'depth_events': {'processed': 0, 'failed': 0}
+            'depth_events': {'processed': 0, 'failed': 0},
+            'mark_price': {'processed': 0, 'failed': 0},
+            'force_orders': {'processed': 0, 'failed': 0}
         }
         
     async def add_event(self, event: MarketDataEvent, symbol_id: int):
@@ -146,6 +168,17 @@ class BatchProcessor:
                     event.ts_exchange, event.ts_ingest, symbol_id,
                     event.first_update_id, event.final_update_id, event.prev_final_update_id,
                     json.dumps(event.bids), json.dumps(event.asks)
+                ))
+            elif isinstance(event, MarkPriceEvent):
+                self.buffers['mark_price'].append((
+                    event.ts_exchange, event.ts_ingest, symbol_id,
+                    event.event_type, event.mark_price, event.index_price,
+                    event.est_settlement_price, event.funding_rate, event.next_funding_time
+                ))
+            elif isinstance(event, ForceOrderEvent):
+                self.buffers['force_orders'].append((
+                    event.ts_exchange, event.ts_ingest, symbol_id,
+                    event.side, event.price, event.qty, json.dumps(event.raw)
                 ))
             
             # Проверяем необходимость flush
@@ -188,6 +221,22 @@ class BatchProcessor:
                             first_update_id, final_update_id, prev_final_update_id,
                             bids, asks
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                        ON CONFLICT DO NOTHING
+                    """, buffer)
+                elif table_name == 'mark_price':
+                    await conn.executemany("""
+                        INSERT INTO marketdata.mark_price (
+                            ts_exchange, ts_ingest, symbol_id, event_type,
+                            mark_price, index_price, est_settlement_price,
+                            funding_rate, next_funding_time
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                        ON CONFLICT DO NOTHING
+                    """, buffer)
+                elif table_name == 'force_orders':
+                    await conn.executemany("""
+                        INSERT INTO marketdata.force_orders (
+                            ts_exchange, ts_ingest, symbol_id, side, price, qty, raw
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
                         ON CONFLICT DO NOTHING
                     """, buffer)
             
@@ -266,6 +315,15 @@ class WebSocketStream:
             elif '@depth' in stream_name:
                 symbol = stream_name.split('@')[0].upper()
                 event = await self._parse_depth(symbol, event_data)
+            elif '@markPrice' in stream_name:
+                # может приходить как per-symbol поток
+                symbol = (event_data.get('s') or stream_name.split('@')[0]).upper()
+                event = await self._parse_mark_price(symbol, event_data)
+            elif '@forceOrder' in stream_name:
+                # forceOrder содержит order в поле 'o'
+                o = event_data.get('o', {})
+                symbol = (o.get('s') or event_data.get('s') or stream_name.split('@')[0]).upper()
+                event = await self._parse_force_order(symbol, event_data)
             else:
                 return
             
@@ -330,6 +388,46 @@ class WebSocketStream:
             )
         except Exception as e:
             logger.error(f"❌ Ошибка парсинга depth {symbol}: {e}")
+            return None
+
+    async def _parse_mark_price(self, symbol: str, data: Dict) -> Optional[MarkPriceEvent]:
+        """Парсинг markPrice@1s события"""
+        try:
+            ts_ex = datetime.fromtimestamp((data.get('E') or 0) / 1000, tz=timezone.utc)
+            return MarkPriceEvent(
+                symbol=symbol,
+                exchange='binance-futures',
+                ts_exchange=ts_ex,
+                ts_ingest=datetime.now(tz=timezone.utc),
+                event_type=data.get('e'),
+                mark_price=float(data['p']) if data.get('p') is not None else None,
+                index_price=float(data['i']) if data.get('i') is not None else None,
+                est_settlement_price=float(data['P']) if data.get('P') is not None else None,
+                funding_rate=float(data['r']) if data.get('r') is not None else None,
+                next_funding_time=(datetime.fromtimestamp(data['T']/1000, tz=timezone.utc) if data.get('T') else None)
+            )
+        except Exception as e:
+            logger.error(f"❌ Ошибка парсинга markPrice {symbol}: {e}")
+            return None
+
+    async def _parse_force_order(self, symbol: str, data: Dict) -> Optional[ForceOrderEvent]:
+        """Парсинг forceOrder события (ликвидации)"""
+        try:
+            o = data.get('o', {})
+            ts_ms = data.get('E') or o.get('T') or 0
+            return ForceOrderEvent(
+                symbol=symbol,
+                exchange='binance-futures',
+                ts_exchange=datetime.fromtimestamp(ts_ms/1000, tz=timezone.utc),
+                ts_ingest=datetime.now(tz=timezone.utc),
+                event_type='forceOrder',
+                side=o.get('S'),
+                price=(float(o['p']) if o.get('p') is not None else None),
+                qty=(float(o['q']) if o.get('q') is not None else None),
+                raw=data
+            )
+        except Exception as e:
+            logger.error(f"❌ Ошибка парсинга forceOrder {symbol}: {e}")
             return None
     
     async def stop(self):
@@ -407,16 +505,29 @@ class MultiStreamCollector:
             self.streams.append(stream)
             logger.info(f"📈 aggTrade поток {i+1}: {len(symbols)} символов")
         
-        # depth поток для топ-символов
+        # depth поток для топ-символов (diff depth @100ms)
         if top_symbols:
-            depth_streams = [f"{s.lower()}@depth5@100ms" for s in top_symbols]
+            depth_streams = [f"{s.lower()}@depth@100ms" for s in top_symbols]
             url = base_url + "/".join(depth_streams)
-            
-            stream = WebSocketStream(
-                url, top_symbols, self.symbol_manager, self.batch_processor
-            )
+            stream = WebSocketStream(url, top_symbols, self.symbol_manager, self.batch_processor)
             self.streams.append(stream)
-            logger.info(f"🧊 depth поток: {len(top_symbols)} топ-символов")
+            logger.info(f"🧊 depth поток (@100ms): {len(top_symbols)} топ-символов")
+
+        # markPrice@1s потоки
+        for i, symbols in enumerate(symbol_chunks):
+            streams = [f"{s.lower()}@markPrice@1s" for s in symbols]
+            url = base_url + "/".join(streams)
+            stream = WebSocketStream(url, symbols, self.symbol_manager, self.batch_processor)
+            self.streams.append(stream)
+            logger.info(f"🏷️ markPrice поток {i+1}: {len(symbols)} символов")
+
+        # forceOrder потоки
+        for i, symbols in enumerate(symbol_chunks):
+            streams = [f"{s.lower()}@forceOrder" for s in symbols]
+            url = base_url + "/".join(streams)
+            stream = WebSocketStream(url, symbols, self.symbol_manager, self.batch_processor)
+            self.streams.append(stream)
+            logger.info(f"⚠️ forceOrder поток {i+1}: {len(symbols)} символов")
         
         logger.info(f"🎯 Создано {len(self.streams)} WebSocket потоков")
     
