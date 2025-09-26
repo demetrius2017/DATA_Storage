@@ -244,8 +244,10 @@ class ProductionCollector:
                 from collector.ingestion.multi_stream_collector import MultiStreamCollector
                 ms = MultiStreamCollector(db_url, batch_size=200)
                 self.ingestors.append(ms)  # для унифицированного shutdown
-                asyncio.create_task(ms.initialize())
-                asyncio.create_task(ms.start())
+                async def _run_ms():
+                    await ms.initialize()
+                    await ms.start()
+                asyncio.create_task(_run_ms())
                 logger.info(f"🏷️ MultiStream worker started (markPrice={self.enable_mark_price}, forceOrder={self.enable_force_order})")
             except Exception as e:
                 logger.error(f"❌ Failed to start MultiStream worker for mark/force: {e}")
