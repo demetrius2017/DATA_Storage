@@ -25,6 +25,22 @@ from contextlib import asynccontextmanager
 import signal
 import sys
 from pathlib import Path
+import os
+
+# Подхватываем переменные окружения из .env.production или .env (если доступны)
+try:
+    from collector.config.settings import load_env_file
+    _root = Path(__file__).resolve().parents[2]
+    for _candidate in [
+        _root / ".env.production",
+        _root / ".env"
+    ]:
+        if _candidate.exists():
+            load_env_file(str(_candidate))
+            break
+except Exception:
+    # Тихо игнорируем, если модуль/файлы недоступны — окружение может быть уже задано снаружи
+    pass
 
 # Настройка логирования
 logging.basicConfig(
@@ -620,10 +636,9 @@ async def main():
     Path("logs").mkdir(exist_ok=True)
     
     # PostgreSQL connection string для Digital Ocean
-    pg_connection_string = (
-        "postgresql://user:password@"
-        "host:port/"
-        "database?sslmode=require"
+    pg_connection_string = os.getenv(
+        "DATABASE_URL",
+        "postgresql://user:password@host:port/database?sslmode=require"
     )
     
     collector = MultiStreamCollector(

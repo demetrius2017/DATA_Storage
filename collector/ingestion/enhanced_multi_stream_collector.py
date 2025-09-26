@@ -33,6 +33,22 @@ from config.symbols_config import (
     get_symbol_shards, ALL_SYMBOLS, RATE_LIMITS
 )
 
+# Подхватываем переменные окружения из .env.production или .env (если доступны)
+try:
+    from config.settings import load_env_file
+    from pathlib import Path
+    _root = Path(__file__).resolve().parents[2]
+    for _candidate in [
+        _root / ".env.production",
+        _root / ".env"
+    ]:
+        if _candidate.exists():
+            load_env_file(str(_candidate))
+            break
+except Exception:
+    # Окружение может быть задано снаружи — продолжаем
+    pass
+
 # Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
@@ -613,7 +629,10 @@ class EnhancedMultiStreamCollector:
 async def main():
     """Главная функция"""
     # PostgreSQL connection string
-    connection_string = 'postgresql://user:password@host:port/database'
+    connection_string = os.getenv(
+        'DATABASE_URL',
+        'postgresql://user:password@host:port/database?sslmode=require'
+    )
     
     collector = EnhancedMultiStreamCollector(connection_string)
     
