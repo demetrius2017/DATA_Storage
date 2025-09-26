@@ -45,6 +45,21 @@ jobs:
               fi
             done
             if [ -n "$(echo $MISSING | tr -d ' ')" ]; then
-              echo "MISSING_SYMBOLS:$MISSING"
-              exit 1
+              echo "-- Fallback: DB-based verification via container --"
+              CID=$(docker ps --format '{{.ID}} {{.Names}} {{.Image}}' | grep -Ei 'collector|orderbook' | head -n1 | awk '{print $1}')
+              if [ -z "$CID" ]; then
+                echo "No collector container found for DB probe"
+                exit 1
+              fi
+              SYMS_CSV=$(printf "%s," "${SYMS_ARR[@]}" | sed 's/,$//')
+              set +e
+              docker exec "$CID" python -m collector.tools.symbol_probe --symbols "$SYMS_CSV" --minutes 5 > /tmp/probe.json
+              STATUS=$?
+              set -e
+              cat /tmp/probe.json || true
+              if [ $STATUS -ne 0 ]; then
+                echo "DB fallback indicates missing/no-updates in last 5m"
+                exit 1
+              fi
             fi
+            echo "All symbols verified (API and/or DB fallback)."
