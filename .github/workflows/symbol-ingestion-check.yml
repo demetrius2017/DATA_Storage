@@ -1,0 +1,50 @@
+name: "🔬 Verify: Per-Symbol Ingestion (4 pairs)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      symbols:
+        description: 'Comma-separated symbols to verify'
+        required: false
+        default: 'SOLUSDT,FIOUSDT,MLNUSDT,GHSTUSDT'
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📁 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🔌 SSH and check symbols via monitoring API
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          timeout: 60s
+          command_timeout: 10m
+          script: |
+            set -e
+            cd /opt/orderbook-collector
+            echo '== /api/system =='
+            curl -fsS http://localhost:8000/api/system || true
+            echo
+            echo '== /api/symbols (filtered) =='
+            SYMS_INPUT='${{ github.event.inputs.symbols }}'
+            if [ -z "$SYMS_INPUT" ]; then SYMS_INPUT='SOLUSDT,FIOUSDT,MLNUSDT,GHSTUSDT'; fi
+            IFS=',' read -r -a SYMS_ARR <<< "$SYMS_INPUT"
+            JSON=$(curl -fsS http://localhost:8000/api/symbols)
+            MISSING=""
+            for S in "${SYMS_ARR[@]}"; do
+              S=$(echo "$S" | tr '[:lower:]' '[:upper:]' | tr -d ' ')
+              if echo "$JSON" | grep -q "\"symbol\":\"$S\""; then
+                echo "OK: $S present"
+              else
+                echo "MISS: $S not found"
+                MISSING="$MISSING $S"
+              fi
+            done
+            if [ -n "$(echo $MISSING | tr -d ' ')" ]; then
+              echo "MISSING_SYMBOLS:$MISSING"
+              exit 1
+            fi
