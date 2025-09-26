@@ -93,6 +93,7 @@ class MarkPriceEvent(MarketDataEvent):
 @dataclass
 class ForceOrderEvent(MarketDataEvent):
     """Событие ликвидации (forceOrder)"""
+    event_type: Optional[str]
     side: Optional[str]   # BUY/SELL
     price: Optional[float]
     qty: Optional[float]
