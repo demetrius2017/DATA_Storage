@@ -32,6 +32,9 @@ services:
       # Depth stream (optional)
       ENABLE_DEPTH: ${ENABLE_DEPTH:-true}
       DEPTH_TOP_SYMBOLS: ${DEPTH_TOP_SYMBOLS:-BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,AVAXUSDT,MATICUSDT,LINKUSDT,ADAUSDT,DOTUSDT}
+      # Additional Futures channels
+      ENABLE_MARK_PRICE: ${ENABLE_MARK_PRICE:-true}
+      ENABLE_FORCE_ORDER: ${ENABLE_FORCE_ORDER:-true}
 
       # Market Maker Analysis Focus
       SYMBOLS_CONFIG: "mm_focused"

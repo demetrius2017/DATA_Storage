@@ -470,9 +470,38 @@ class MultiStreamCollector:
         """Инициализация коллектора"""
         logger.info("🚀 Инициализация Multi-Stream Collector")
         
-        # PostgreSQL подключение
+        # PostgreSQL подключение (уважаем sslmode в DSN для DO Postgres)
+        ssl_ctx = None
+        try:
+            from urllib.parse import urlparse
+            import ssl as _ssl
+            parsed = urlparse(self.pg_connection_string)
+            query = {}
+            if parsed and parsed.query:
+                for part in parsed.query.split('&'):
+                    if not part:
+                        continue
+                    k, _, v = part.partition('=')
+                    query[k] = v
+            sslmode = (query.get('sslmode') or 'require').lower()
+            if sslmode in ('disable', 'allow', 'prefer'):
+                ssl_ctx = False
+            elif sslmode in ('require', 'verify-none'):
+                ctx = _ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = _ssl.CERT_NONE
+                ssl_ctx = ctx
+            elif sslmode in ('verify-full', 'verify-ca'):
+                ctx = _ssl.create_default_context()
+                ctx.check_hostname = True
+                ctx.verify_mode = _ssl.CERT_REQUIRED
+                ssl_ctx = ctx
+        except Exception:
+            ssl_ctx = None
+
         self.pg_pool = await asyncpg.create_pool(
-            self.pg_connection_string,
+            dsn=self.pg_connection_string,
+            ssl=ssl_ctx,
             min_size=5,
             max_size=20,
             command_timeout=30
@@ -500,30 +529,37 @@ class MultiStreamCollector:
         
         base_url = "wss://fstream.binance.com/stream?streams="
         
+        # Управляющие флаги каналов (по умолчанию включены base-каналы)
+        enable_bt = (os.environ.get('ENABLE_BOOK_TICKER', 'true').lower() == 'true')
+        enable_tr = (os.environ.get('ENABLE_AGG_TRADE', 'true').lower() == 'true')
+        enable_depth_top = (os.environ.get('ENABLE_DEPTH_TOP', 'true').lower() == 'true')
+
         # bookTicker потоки
-        for i, symbols in enumerate(symbol_chunks):
-            streams = [f"{s.lower()}@bookTicker" for s in symbols]
-            url = base_url + "/".join(streams)
-            
-            stream = WebSocketStream(
-                url, symbols, self.symbol_manager, self.batch_processor
-            )
-            self.streams.append(stream)
-            logger.info(f"📡 bookTicker поток {i+1}: {len(symbols)} символов")
+        if enable_bt:
+            for i, symbols in enumerate(symbol_chunks):
+                streams = [f"{s.lower()}@bookTicker" for s in symbols]
+                url = base_url + "/".join(streams)
+                
+                stream = WebSocketStream(
+                    url, symbols, self.symbol_manager, self.batch_processor
+                )
+                self.streams.append(stream)
+                logger.info(f"📡 bookTicker поток {i+1}: {len(symbols)} символов")
         
         # aggTrade потоки  
-        for i, symbols in enumerate(symbol_chunks):
-            streams = [f"{s.lower()}@aggTrade" for s in symbols]
-            url = base_url + "/".join(streams)
-            
-            stream = WebSocketStream(
-                url, symbols, self.symbol_manager, self.batch_processor
-            )
-            self.streams.append(stream)
-            logger.info(f"📈 aggTrade поток {i+1}: {len(symbols)} символов")
+        if enable_tr:
+            for i, symbols in enumerate(symbol_chunks):
+                streams = [f"{s.lower()}@aggTrade" for s in symbols]
+                url = base_url + "/".join(streams)
+                
+                stream = WebSocketStream(
+                    url, symbols, self.symbol_manager, self.batch_processor
+                )
+                self.streams.append(stream)
+                logger.info(f"📈 aggTrade поток {i+1}: {len(symbols)} символов")
         
         # depth поток для топ-символов (diff depth @100ms)
-        if top_symbols:
+        if enable_depth_top and top_symbols:
             depth_streams = [f"{s.lower()}@depth@100ms" for s in top_symbols]
             url = base_url + "/".join(depth_streams)
             stream = WebSocketStream(url, top_symbols, self.symbol_manager, self.batch_processor)
