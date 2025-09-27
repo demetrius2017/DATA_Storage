@@ -31,7 +31,8 @@ COMMIT;
 
 BEGIN;
   -- Derived top5 snapshot table
-  DELETE FROM marketdata.orderbook_top5
+  -- Canonical table
+  DELETE FROM marketdata.orderbook_topN
   WHERE ts_exchange < NOW() - INTERVAL '168 hours';
 COMMIT;
 
@@ -39,4 +40,4 @@ COMMIT;
 -- VACUUM (ANALYZE) marketdata.book_ticker;
 -- VACUUM (ANALYZE) marketdata.trades;
 -- VACUUM (ANALYZE) marketdata.depth_events;
--- VACUUM (ANALYZE) marketdata.orderbook_top5;
+-- VACUUM (ANALYZE) marketdata.orderbook_topN;

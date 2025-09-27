@@ -39,6 +39,7 @@ class BatchBuffer:
     book_ticker: List[Dict[str, Any]] = field(default_factory=list)
     trades: List[Dict[str, Any]] = field(default_factory=list)
     depth_events: List[Dict[str, Any]] = field(default_factory=list)
+    orderbook_topn: List[Dict[str, Any]] = field(default_factory=list)
     
     max_size: int = 500  # Максимальный размер батча
     max_age_seconds: int = 10  # Максимальный возраст батча
@@ -46,7 +47,9 @@ class BatchBuffer:
     
     def is_ready_for_flush(self) -> bool:
         """Проверка готовности батча к записи"""
-        total_records = len(self.book_ticker) + len(self.trades) + len(self.depth_events)
+        total_records = (
+            len(self.book_ticker) + len(self.trades) + len(self.depth_events) + len(self.orderbook_topn)
+        )
         age = time.time() - self.created_at
         return total_records >= self.max_size or age >= self.max_age_seconds
     
@@ -55,6 +58,7 @@ class BatchBuffer:
         self.book_ticker.clear()
         self.trades.clear() 
         self.depth_events.clear()
+        self.orderbook_topn.clear()
         self.created_at = time.time()
 
 @dataclass
@@ -267,6 +271,42 @@ class DatabaseManager:
                 ],
             )
 
+    async def batch_insert_orderbook_topn(self, records: List[Dict[str, Any]]):
+        """Батчевая вставка снимков topN (orderbook_topN)"""
+        if not records:
+            return
+        if self.pool is None:
+            raise RuntimeError("Database connection pool is not initialized (pool=None)")
+
+        async with self.pool.acquire() as conn:
+            await conn.executemany(
+                """
+                INSERT INTO marketdata.orderbook_topN (
+                    ts_exchange, symbol_id,
+                    b1_price, b1_qty, b2_price, b2_qty, b3_price, b3_qty, b4_price, b4_qty, b5_price, b5_qty,
+                    a1_price, a1_qty, a2_price, a2_qty, a3_price, a3_qty, a4_price, a4_qty, a5_price, a5_qty,
+                    microprice, i1, i5, wall_size_bid, wall_size_ask, wall_dist_bid_bps, wall_dist_ask_bps, ofi_1s
+                ) VALUES (
+                    to_timestamp($1/1000.0), $2,
+                    $3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
+                    $13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
+                    $23,$24,$25,$26,$27,$28,$29,$30
+                )
+                ON CONFLICT (symbol_id, ts_exchange) DO NOTHING
+                """,
+                [
+                    (
+                        r['ts_exchange'], r['symbol_id'],
+                        r.get('b1_price'), r.get('b1_qty'), r.get('b2_price'), r.get('b2_qty'), r.get('b3_price'), r.get('b3_qty'),
+                        r.get('b4_price'), r.get('b4_qty'), r.get('b5_price'), r.get('b5_qty'),
+                        r.get('a1_price'), r.get('a1_qty'), r.get('a2_price'), r.get('a2_qty'), r.get('a3_price'), r.get('a3_qty'),
+                        r.get('a4_price'), r.get('a4_qty'), r.get('a5_price'), r.get('a5_qty'),
+                        r.get('microprice'), r.get('i1'), r.get('i5'), r.get('wall_size_bid'), r.get('wall_size_ask'),
+                        r.get('wall_dist_bid_bps'), r.get('wall_dist_ask_bps'), r.get('ofi_1s'),
+                    ) for r in records
+                ]
+            )
+
     async def close(self):
         """Закрытие пула соединений"""
         if self.pool:
@@ -315,6 +355,11 @@ class NullDatabaseManager(DatabaseManager):
 
     async def close(self):
         logger.info("DRY-RUN: закрывать нечего")
+
+    async def batch_insert_orderbook_topn(self, records: List[Dict[str, Any]]):
+        if not records:
+            return
+        logger.info(f"DRY-RUN: orderbook_topN x{len(records)} (не сохраняем)")
     
     async def batch_insert_book_ticker(self, records: List[Dict[str, Any]]):
         """Батчевая вставка book_ticker записей"""
@@ -422,6 +467,16 @@ class WebSocketStreamManager:
         # Базовый WS URL (из env), по умолчанию Binance Futures
         self.ws_base_url = (ws_base_url or os.getenv('BINANCE_WS_URL', 'wss://fstream.binance.com/ws/')).strip()
         logger.info(f"Binance WS base set to: {self.ws_base_url}")
+        # Инициализация TopNBuilder для реконструкции стакана
+        self.topn_builder = None
+        try:
+            from collector.processing.topn_builder import TopNBuilder
+            parsed = urlparse(self.ws_base_url)
+            rest_host = f"https://{parsed.netloc}" if parsed.netloc else "https://fapi.binance.com"
+            self.topn_builder = TopNBuilder(rest_base_url=rest_host)
+            logger.info(f"TopNBuilder инициализирован, REST base: {rest_host}")
+        except Exception as e:
+            logger.warning(f"TopNBuilder не инициализирован: {e}")
         
         # Статистика
         self.stats = {
@@ -598,6 +653,14 @@ class WebSocketStreamManager:
             }
             
             self.buffers[shard_id].depth_events.append(record)
+            # Параллельно строим top-5 снапшот
+            if self.topn_builder is not None:
+                try:
+                    rec_topn = await self.topn_builder.process_event(symbol, data, symbol_id)
+                    if rec_topn:
+                        self.buffers[shard_id].orderbook_topn.append(rec_topn)
+                except Exception as be:
+                    logger.debug(f"TopNBuilder skip for {symbol}: {be}")
             
         except Exception as e:
             logger.error(f"Ошибка обработки depth: {e}")
@@ -631,11 +694,16 @@ class WebSocketStreamManager:
                 tasks.append(self.db_manager.batch_insert_trades(buffer.trades.copy()))
             if buffer.depth_events:
                 tasks.append(self.db_manager.batch_insert_depth_events(buffer.depth_events.copy()))
+            if buffer.orderbook_topn:
+                # Пишем после raw событий, но в той же пачке
+                tasks.append(self.db_manager.batch_insert_orderbook_topn(buffer.orderbook_topn.copy()))
                 
             if tasks:
                 await asyncio.gather(*tasks)
                 
-                total_records = len(buffer.book_ticker) + len(buffer.trades) + len(buffer.depth_events)
+                total_records = (
+                    len(buffer.book_ticker) + len(buffer.trades) + len(buffer.depth_events) + len(buffer.orderbook_topn)
+                )
                 flush_time = time.time() - start_time
                 
                 logger.info(f"Шард {shard_id}: записано {total_records} записей за {flush_time:.3f}с")

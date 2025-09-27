@@ -284,37 +284,31 @@ class PostgresMLAdapter:
                                 symbol_ids: List[int], 
                                 start_date: date, 
                                 end_date: date) -> pd.DataFrame:
-        """Получение depth features (если есть orderbook_top5 данные)"""
+        """Получение depth features (предпочтительно из orderbook_topN; fallback на orderbook_top5)"""
         try:
             async with self.pool.acquire() as conn:
-                # Проверка наличия depth данных
-                has_depth = await conn.fetchval("""
-                    SELECT EXISTS(
-                        SELECT 1 FROM information_schema.tables 
-                        WHERE table_schema = 'marketdata' 
-                        AND table_name = 'orderbook_top5'
-                    )
+                # Определяем доступную таблицу: orderbook_topN (канонично) или legacy orderbook_top5
+                table_name = await conn.fetchval("""
+                    SELECT CASE 
+                        WHEN EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='marketdata' AND table_name='orderbook_topn') THEN 'marketdata.orderbook_topN'
+                        WHEN EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='marketdata' AND table_name='orderbook_top5') THEN 'marketdata.orderbook_top5'
+                        ELSE NULL END
                 """)
-                
-                if not has_depth:
+                if not table_name:
                     return pd.DataFrame()
-                
-                query = """
+
+                # Нормализованный селект: для topN доступны wall_size_bid/ask, для legacy — wall_size_bps
+                query = f"""
                 SELECT 
                     date_trunc('hour', ts_exchange) as hour_bucket,
                     symbol_id,
-                    
-                    -- Imbalance features
                     AVG(i1) as avg_i1,
                     AVG(i5) as avg_i5,
                     AVG(microprice) as avg_microprice,
-                    AVG(wall_size_bps) as avg_wall_size,
-                    
-                    -- Spread features
+                    AVG(COALESCE(GREATEST(COALESCE(wall_size_bid,0), COALESCE(wall_size_ask,0)), wall_size_bps)) as avg_wall_size,
                     AVG(a1_price - b1_price) as avg_spread,
                     STDDEV(a1_price - b1_price) as spread_volatility
-                    
-                FROM marketdata.orderbook_top5
+                FROM {table_name}
                 WHERE 
                     ts_exchange >= $1::DATE
                     AND ts_exchange < ($2::DATE + INTERVAL '1 day')
@@ -322,7 +316,7 @@ class PostgresMLAdapter:
                 GROUP BY hour_bucket, symbol_id
                 ORDER BY symbol_id, hour_bucket
                 """
-                
+
                 rows = await conn.fetch(query, start_date, end_date, symbol_ids)
                 return pd.DataFrame(rows)
                 
