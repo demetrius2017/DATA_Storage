@@ -471,8 +471,9 @@ class WebSocketStreamManager:
         self.topn_builder = None
         try:
             from collector.processing.topn_builder import TopNBuilder
-            parsed = urlparse(self.ws_base_url)
-            rest_host = f"https://{parsed.netloc}" if parsed.netloc else "https://fapi.binance.com"
+            # Корректный REST host: предпочитаем BINANCE_BASE_URL (например, https://fapi.binance.com)
+            env_rest = os.getenv('BINANCE_BASE_URL', '').strip()
+            rest_host = env_rest if env_rest else "https://fapi.binance.com"
             self.topn_builder = TopNBuilder(rest_base_url=rest_host)
             logger.info(f"TopNBuilder инициализирован, REST base: {rest_host}")
         except Exception as e:
