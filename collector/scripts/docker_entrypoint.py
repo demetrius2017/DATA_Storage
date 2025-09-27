@@ -121,6 +121,51 @@ class ProductionCollector:
                 logger.info("✅ Ensured unique index on marketdata.depth_events (symbol_id, ts_exchange, final_update_id)")
             except Exception as e:
                 logger.error(f"❌ Failed to ensure unique index for depth_events: {e}")
+
+            # Гарантируем наличие канонической таблицы marketdata.orderbook_topN (idempotent)
+            try:
+                ensure_topn_sql = (
+                    """
+                    -- Create canonical Top-N table if missing
+                    CREATE TABLE IF NOT EXISTS marketdata.orderbook_topN (
+                        ts_exchange timestamptz NOT NULL,
+                        symbol_id bigint NOT NULL REFERENCES marketdata.symbols(id),
+                        b1_price double precision, b1_qty double precision,
+                        b2_price double precision, b2_qty double precision,
+                        b3_price double precision, b3_qty double precision,
+                        b4_price double precision, b4_qty double precision,
+                        b5_price double precision, b5_qty double precision,
+                        a1_price double precision, a1_qty double precision,
+                        a2_price double precision, a2_qty double precision,
+                        a3_price double precision, a3_qty double precision,
+                        a4_price double precision, a4_qty double precision,
+                        a5_price double precision, a5_qty double precision,
+                        microprice double precision,
+                        i1 double precision,
+                        i5 double precision,
+                        wall_size_bid double precision,
+                        wall_size_ask double precision,
+                        wall_dist_bid_bps double precision,
+                        wall_dist_ask_bps double precision,
+                        ofi_1s double precision,
+                        total_bid_qty double precision GENERATED ALWAYS AS (
+                            COALESCE(b1_qty,0) + COALESCE(b2_qty,0) + COALESCE(b3_qty,0) + COALESCE(b4_qty,0) + COALESCE(b5_qty,0)
+                        ) STORED,
+                        total_ask_qty double precision GENERATED ALWAYS AS (
+                            COALESCE(a1_qty,0) + COALESCE(a2_qty,0) + COALESCE(a3_qty,0) + COALESCE(a4_qty,0) + COALESCE(a5_qty,0)
+                        ) STORED,
+                        PRIMARY KEY (symbol_id, ts_exchange)
+                    );
+                    SELECT create_hypertable('marketdata.orderbook_topN', 'ts_exchange',
+                                             chunk_time_interval => INTERVAL '6 hours', if_not_exists => TRUE);
+                    CREATE INDEX IF NOT EXISTS idx_orderbook_topN_time ON marketdata.orderbook_topN (symbol_id, ts_exchange);
+                    """
+                )
+                await self.db_connection.execute_script("SET lock_timeout TO '5s';")
+                await self.db_connection.execute_script(ensure_topn_sql)
+                logger.info("✅ Ensured marketdata.orderbook_topN (hypertable + index)")
+            except Exception as e:
+                logger.error(f"❌ Failed to ensure marketdata.orderbook_topN: {e}")
         else:
             logger.warning("⚠️ Schema file not found, skipping schema creation")
     
