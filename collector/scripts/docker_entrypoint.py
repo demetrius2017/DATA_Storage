@@ -65,9 +65,10 @@ class ProductionCollector:
         # Depth настройки
         self.enable_depth = os.getenv('ENABLE_DEPTH', 'false').strip().lower() in ('1', 'true', 'yes')
         self.depth_top_symbols_env = os.getenv('DEPTH_TOP_SYMBOLS', '')
-        # Доп. каналы markPrice/forceOrder (по умолчанию не включаем в этом процессе, можно запускать отдельным воркером)
-        self.enable_mark_price = os.getenv('ENABLE_MARK_PRICE', 'false').strip().lower() in ('1','true','yes')
-        self.enable_force_order = os.getenv('ENABLE_FORCE_ORDER', 'false').strip().lower() in ('1','true','yes')
+        # Доп. каналы markPrice/forceOrder
+        # По умолчанию ВКЛЮЧЕНЫ (env может только выключать)
+        self.enable_mark_price = os.getenv('ENABLE_MARK_PRICE', 'true').strip().lower() in ('1','true','yes')
+        self.enable_force_order = os.getenv('ENABLE_FORCE_ORDER', 'true').strip().lower() in ('1','true','yes')
         # Watchdog зависших запросов
         self.enable_db_watchdog = os.getenv('ENABLE_DB_WATCHDOG', 'true').strip().lower() in ('1','true','yes')
         try:
@@ -232,25 +233,29 @@ class ProductionCollector:
             else:
                 logger.warning("ENABLE_DEPTH=true, но список depth символов пуст — depth не запущен")
 
-        # 3) Опционально: отдельный multi-stream воркер для markPrice/forceOrder
+        # 3) Отдельный multi-stream воркер для markPrice/forceOrder — ЗАПУСКАЕМ ВСЕГДА
+        # По умолчанию оба канала включены; установка ENABLE_MARK_PRICE/ENABLE_FORCE_ORDER в false отключает поток.
         # Чтобы избежать дублирования, в этом воркере отключаем base-каналы и depth.
-        if self.enable_mark_price or self.enable_force_order:
-            try:
-                os.environ.setdefault('ENABLE_BOOK_TICKER', 'false')
-                os.environ.setdefault('ENABLE_AGG_TRADE', 'false')
-                os.environ.setdefault('ENABLE_DEPTH_TOP', 'false')
-                os.environ['ENABLE_MARK_PRICE'] = 'true' if self.enable_mark_price else 'false'
-                os.environ['ENABLE_FORCE_ORDER'] = 'true' if self.enable_force_order else 'false'
-                from collector.ingestion.multi_stream_collector import MultiStreamCollector
-                ms = MultiStreamCollector(db_url, batch_size=200)
-                self.ingestors.append(ms)  # для унифицированного shutdown
-                async def _run_ms():
-                    await ms.initialize()
-                    await ms.start()
-                asyncio.create_task(_run_ms())
-                logger.info(f"🏷️ MultiStream worker started (markPrice={self.enable_mark_price}, forceOrder={self.enable_force_order})")
-            except Exception as e:
-                logger.error(f"❌ Failed to start MultiStream worker for mark/force: {e}")
+        try:
+            os.environ.setdefault('ENABLE_BOOK_TICKER', 'false')
+            os.environ.setdefault('ENABLE_AGG_TRADE', 'false')
+            os.environ.setdefault('ENABLE_DEPTH_TOP', 'false')
+            # Если переменные не заданы — включаем по умолчанию
+            os.environ.setdefault('ENABLE_MARK_PRICE', 'true' if self.enable_mark_price else 'false')
+            os.environ.setdefault('ENABLE_FORCE_ORDER', 'true' if self.enable_force_order else 'false')
+            from collector.ingestion.multi_stream_collector import MultiStreamCollector
+            ms = MultiStreamCollector(db_url, batch_size=200)
+            self.ingestors.append(ms)  # для унифицированного shutdown
+            async def _run_ms():
+                await ms.initialize()
+                await ms.start()
+            asyncio.create_task(_run_ms())
+            logger.info(
+                f"🏷️ MultiStream worker started (markPrice={os.environ.get('ENABLE_MARK_PRICE')}, "
+                f"forceOrder={os.environ.get('ENABLE_FORCE_ORDER')})"
+            )
+        except Exception as e:
+            logger.error(f"❌ Failed to start MultiStream worker for mark/force: {e}")
     
     async def start_health_monitor(self):
         """Запуск health monitoring dashboard"""

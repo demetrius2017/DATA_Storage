@@ -13,6 +13,7 @@ import asyncio
 import argparse
 import asyncpg
 from datetime import timedelta
+from dotenv import load_dotenv
 
 DEFAULT_LAST_MIN = 5
 DEFAULT_LAST_MIN_LONG = 60
@@ -22,12 +23,16 @@ SQL_QUERIES = {
         "book_ticker": "SELECT MAX(ts_exchange) AS max_ts FROM marketdata.book_ticker;",
         "trades": "SELECT MAX(ts_exchange) AS max_ts FROM marketdata.trades;",
         "depth_events": "SELECT MAX(ts_exchange) AS max_ts FROM marketdata.depth_events;",
+        "mark_price": "SELECT MAX(ts_exchange) AS max_ts FROM marketdata.mark_price;",
+        "force_orders": "SELECT MAX(ts_exchange) AS max_ts FROM marketdata.force_orders;",
         "orderbook_top5": "SELECT MAX(ts_exchange) AS max_ts FROM marketdata.orderbook_top5;"
     },
     "counts_recent": {
         "book_ticker_5m": "SELECT COUNT(*) FROM marketdata.book_ticker WHERE ts_exchange >= NOW() - INTERVAL '5 minutes';",
         "trades_5m": "SELECT COUNT(*) FROM marketdata.trades WHERE ts_exchange >= NOW() - INTERVAL '5 minutes';",
         "depth_events_5m": "SELECT COUNT(*) FROM marketdata.depth_events WHERE ts_exchange >= NOW() - INTERVAL '5 minutes';",
+        "mark_price_5m": "SELECT COUNT(*) FROM marketdata.mark_price WHERE ts_exchange >= NOW() - INTERVAL '5 minutes';",
+        "force_orders_5m": "SELECT COUNT(*) FROM marketdata.force_orders WHERE ts_exchange >= NOW() - INTERVAL '5 minutes';",
         "book_ticker_60m": "SELECT COUNT(*) FROM marketdata.book_ticker WHERE ts_exchange >= NOW() - INTERVAL '60 minutes';",
         "trades_60m": "SELECT COUNT(*) FROM marketdata.trades WHERE ts_exchange >= NOW() - INTERVAL '60 minutes';",
         "depth_events_60m": "SELECT COUNT(*) FROM marketdata.depth_events WHERE ts_exchange >= NOW() - INTERVAL '60 minutes';"
@@ -72,6 +77,14 @@ async def run_probe(db_url: str):
         await conn.close()
 
 if __name__ == "__main__":
+    # Подхватим переменные окружения из .env и .env.production, если доступны
+    try:
+        load_dotenv()  # .env по умолчанию
+        if not os.getenv('DATABASE_URL') and os.path.exists('.env.production'):
+            load_dotenv('.env.production')
+    except Exception:
+        pass
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--db', dest='db', default=os.getenv('DATABASE_URL'), help='Database URL (postgres:// or postgresql://)')
     args = parser.parse_args()

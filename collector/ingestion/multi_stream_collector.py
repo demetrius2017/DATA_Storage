@@ -311,43 +311,55 @@ class WebSocketStream:
                     await asyncio.sleep(5)
     
     async def _process_message(self, message: str):
-        """Обработка WebSocket сообщения"""
+        """Обработка WebSocket сообщения (поддерживает одиночные события и массивы событий)"""
         try:
             data = json.loads(message)
-            
+
             # Пропускаем служебные сообщения
             if 'stream' not in data or 'data' not in data:
                 return
-            
+
             stream_name = data['stream']
-            event_data = data['data']
-            
-            # Парсинг символа из stream name
-            if '@bookTicker' in stream_name:
-                symbol = stream_name.replace('@bookTicker', '').upper()
-                event = await self._parse_book_ticker(symbol, event_data)
-            elif '@aggTrade' in stream_name:
-                symbol = stream_name.replace('@aggTrade', '').upper()
-                event = await self._parse_agg_trade(symbol, event_data)
-            elif '@depth' in stream_name:
-                symbol = stream_name.split('@')[0].upper()
-                event = await self._parse_depth(symbol, event_data)
-            elif '@markPrice' in stream_name:
-                # может приходить как per-symbol поток
-                symbol = (event_data.get('s') or stream_name.split('@')[0]).upper()
-                event = await self._parse_mark_price(symbol, event_data)
-            elif '@forceOrder' in stream_name:
-                # forceOrder содержит order в поле 'o'
-                o = event_data.get('o', {})
-                symbol = (o.get('s') or event_data.get('s') or stream_name.split('@')[0]).upper()
-                event = await self._parse_force_order(symbol, event_data)
-            else:
-                return
-            
-            if event and symbol in self.symbol_manager.symbols:
-                symbol_id = self.symbol_manager.symbols[symbol]
-                await self.batch_processor.add_event(event, symbol_id)
-                
+            payload = data['data']
+
+            # Некоторые агрегированные потоки Binance (например, !markPrice@arr@1s) присылают массив событий
+            events_iter = payload if isinstance(payload, list) else [payload]
+
+            for event_data in events_iter:
+                event = None
+                symbol = None
+
+                # Парсинг символа и событие по типу стрима
+                if '@bookTicker' in stream_name:
+                    symbol = (stream_name.replace('@bookTicker', '') or event_data.get('s', '')).upper()
+                    event = await self._parse_book_ticker(symbol, event_data)
+                elif '@aggTrade' in stream_name:
+                    symbol = (stream_name.replace('@aggTrade', '') or event_data.get('s', '')).upper()
+                    event = await self._parse_agg_trade(symbol, event_data)
+                elif '@depth' in stream_name:
+                    symbol = (stream_name.split('@')[0] or event_data.get('s', '')).upper()
+                    event = await self._parse_depth(symbol, event_data)
+                elif '@markPrice' in stream_name:
+                    # может приходить как per-symbol поток, так и агрегированный (!markPrice@arr@1s)
+                    symbol = (event_data.get('s') or (stream_name.split('@')[0] if not stream_name.startswith('!') else '')).upper()
+                    if not symbol:
+                        # если символ не удалось определить — пропускаем такой элемент
+                        continue
+                    event = await self._parse_mark_price(symbol, event_data)
+                elif '@forceOrder' in stream_name:
+                    # forceOrder: per-symbol или агрегированный (!forceOrder@arr)
+                    o = event_data.get('o', {}) if isinstance(event_data, dict) else {}
+                    symbol = (o.get('s') or event_data.get('s') or (stream_name.split('@')[0] if not stream_name.startswith('!') else '')).upper()
+                    if not symbol:
+                        continue
+                    event = await self._parse_force_order(symbol, event_data)
+                else:
+                    continue
+
+                if event and symbol in self.symbol_manager.symbols:
+                    symbol_id = self.symbol_manager.symbols[symbol]
+                    await self.batch_processor.add_event(event, symbol_id)
+
         except Exception as e:
             logger.error(f"❌ Ошибка обработки сообщения: {e}")
     
@@ -566,25 +578,22 @@ class MultiStreamCollector:
             self.streams.append(stream)
             logger.info(f"🧊 depth поток (@100ms): {len(top_symbols)} топ-символов")
 
-        # markPrice@1s потоки (включаем по флагу окружения)
+        # markPrice потоки: используем агрегированный поток Binance для надёжности (!markPrice@arr@1s)
         enable_mark = (os.environ.get('ENABLE_MARK_PRICE', 'true').lower() == 'true')
         if enable_mark:
-            for i, symbols in enumerate(symbol_chunks):
-                streams = [f"{s.lower()}@markPrice@1s" for s in symbols]
-                url = base_url + "/".join(streams)
-                stream = WebSocketStream(url, symbols, self.symbol_manager, self.batch_processor)
-                self.streams.append(stream)
-                logger.info(f"🏷️ markPrice поток {i+1}: {len(symbols)} символов")
+            url = base_url + "!markPrice@arr@1s"
+            # В агрегированном режиме список symbols используется только для фильтрации символов при add_event
+            stream = WebSocketStream(url, all_symbols, self.symbol_manager, self.batch_processor)
+            self.streams.append(stream)
+            logger.info(f"🏷️ markPrice агрегированный поток активирован (!markPrice@arr@1s)")
 
-        # forceOrder потоки (включаем по флагу окружения)
+        # forceOrder потоки: агрегированный поток (!forceOrder@arr)
         enable_force = (os.environ.get('ENABLE_FORCE_ORDER', 'true').lower() == 'true')
         if enable_force:
-            for i, symbols in enumerate(symbol_chunks):
-                streams = [f"{s.lower()}@forceOrder" for s in symbols]
-                url = base_url + "/".join(streams)
-                stream = WebSocketStream(url, symbols, self.symbol_manager, self.batch_processor)
-                self.streams.append(stream)
-                logger.info(f"⚠️ forceOrder поток {i+1}: {len(symbols)} символов")
+            url = base_url + "!forceOrder@arr"
+            stream = WebSocketStream(url, all_symbols, self.symbol_manager, self.batch_processor)
+            self.streams.append(stream)
+            logger.info(f"⚠️ forceOrder агрегированный поток активирован (!forceOrder@arr)")
         
         logger.info(f"🎯 Создано {len(self.streams)} WebSocket потоков")
     
